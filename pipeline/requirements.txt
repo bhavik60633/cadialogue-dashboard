@@ -1,0 +1,53 @@
+# ── AI Providers ──────────────────────────────────────────────────────────
+openai>=1.40.0              # GPT-4o, GPT-4o-mini (primary), DALL-E 3
+google-genai>=0.7.0         # Gemini native SDK (fallback / large JSON)
+anthropic>=0.34.0           # Legacy reference (unused in prod, kept for back-compat)
+
+# ── HTTP ──────────────────────────────────────────────────────────────────
+requests>=2.31.0
+aiohttp>=3.9.0
+httpx>=0.27.0
+
+# ── Finance / Market Data ─────────────────────────────────────────────────
+yfinance>=0.2.36
+pytrends>=4.9.2
+
+# ── News ──────────────────────────────────────────────────────────────────
+newsapi-python>=0.2.7
+
+# ── Google APIs (Indexing) ────────────────────────────────────────────────
+google-auth>=2.27.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.118.0
+
+# ── HTML Parsing ──────────────────────────────────────────────────────────
+beautifulsoup4>=4.12.0
+lxml>=5.1.0
+
+# ── Text processing ───────────────────────────────────────────────────────
+fuzzywuzzy>=0.18.0
+python-Levenshtein>=0.25.0
+json-repair>=0.25.0          # Repairs malformed AI JSON responses
+
+# ── Image processing ──────────────────────────────────────────────────────
+Pillow>=10.0.0
+
+# ── Data / typing ─────────────────────────────────────────────────────────
+python-dateutil>=2.9.0
+pydantic>=2.6.0
+python-dotenv>=1.0.0         # Loads .env in development
+
+# ── FastAPI sidecar ───────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+sse-starlette>=2.1.0
+python-multipart>=0.0.9      # multipart/form-data parsing (file uploads)
+
+# ── Telegram (optional) ───────────────────────────────────────────────────
+python-telegram-bot>=20.7
+
+# ── Auth & crypto ─────────────────────────────────────────────────────────
+bcrypt>=4.1.0
+
+# ── File locking ──────────────────────────────────────────────────────────
+filelock>=3.13.0

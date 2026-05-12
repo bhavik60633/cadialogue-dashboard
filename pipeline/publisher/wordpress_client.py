@@ -1,0 +1,401 @@
+"""
+WordPress REST API client.
+Publishes articles, uploads media, sets SEO meta.
+Uses WordPress Application Passwords (Basic Auth).
+"""
+import base64
+import re
+from pathlib import Path
+from typing import Optional
+
+import requests
+
+from ..config import Config
+from ..research.topic_finder import CATEGORY_MAP
+from ..utils.logger import get_logger
+from ..utils.retry import with_retry_sync
+from ..writer.article_generator import SEOMeta
+from .seo_meta import build_wp_meta
+
+logger = get_logger("wordpress_client")
+
+
+def _auth_header(config: Config) -> dict:
+    token = base64.b64encode(
+        f"{config.wp_username}:{config.wp_app_password}".encode()
+    ).decode()
+    return {"Authorization": f"Basic {token}"}
+
+
+def _markdown_to_html(md: str) -> str:
+    """
+    Convert Claude's markdown output to WordPress-compatible HTML.
+    Targeted regex — no full markdown parser dependency.
+    """
+    html = md
+
+    # H2 and H3 headings
+    html = re.sub(r"^## (.+)$", r"<h2>\1</h2>", html, flags=re.MULTILINE)
+    html = re.sub(r"^### (.+)$", r"<h3>\1</h3>", html, flags=re.MULTILINE)
+    # H1 (shouldn't appear in body, but strip it)
+    html = re.sub(r"^# .+$", "", html, flags=re.MULTILINE)
+
+    # Bold and italic
+    html = re.sub(r"\*\*\*(.+?)\*\*\*", r"<strong><em>\1</em></strong>", html)
+    html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html)
+    html = re.sub(r"\*(.+?)\*", r"<em>\1</em>", html)
+
+    # Unordered lists
+    def replace_ul(m):
+        items = re.findall(r"^[-*] (.+)$", m.group(0), re.MULTILINE)
+        return "<ul>\n" + "\n".join(f"<li>{i}</li>" for i in items) + "\n</ul>"
+
+    html = re.sub(r"(?:^[-*] .+\n?)+", replace_ul, html, flags=re.MULTILINE)
+
+    # Paragraphs — wrap blocks separated by blank lines
+    blocks = html.split("\n\n")
+    wrapped = []
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        if block.startswith("<"):
+            wrapped.append(block)
+        else:
+            wrapped.append(f"<p>{block}</p>")
+    html = "\n\n".join(wrapped)
+
+    return html
+
+
+@with_retry_sync(max_attempts=3, delay_seconds=5)
+def _get_or_create_category(name: str, config: Config) -> int:
+    """Return category ID, creating it if it doesn't exist."""
+    base = f"{config.wp_url}/wp-json/wp/v2/categories"
+    headers = _auth_header(config)
+
+    # Search for existing
+    resp = requests.get(base, params={"search": name}, headers=headers, timeout=15)
+    resp.raise_for_status()
+    results = resp.json()
+    if results:
+        return results[0]["id"]
+
+    # Create new
+    resp = requests.post(base, json={"name": name}, headers=headers, timeout=15)
+    resp.raise_for_status()
+    return resp.json()["id"]
+
+
+@with_retry_sync(max_attempts=3, delay_seconds=5)
+def _upload_featured_image(image_url: str, alt_text: str, config: Config) -> Optional[int]:
+    """Download image from URL and upload to WordPress media library."""
+    try:
+        img_resp = requests.get(image_url, timeout=20)
+        img_resp.raise_for_status()
+        content_type = img_resp.headers.get("Content-Type", "image/jpeg")
+        filename = image_url.split("/")[-1].split("?")[0] or "featured.jpg"
+
+        headers = {
+            **_auth_header(config),
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Type": content_type,
+        }
+        upload_url = f"{config.wp_url}/wp-json/wp/v2/media"
+        resp = requests.post(upload_url, data=img_resp.content, headers=headers, timeout=30)
+        resp.raise_for_status()
+
+        media_id = resp.json()["id"]
+
+        # Set alt text
+        requests.post(
+            f"{upload_url}/{media_id}",
+            json={"alt_text": alt_text},
+            headers=_auth_header(config),
+            timeout=10,
+        )
+        return media_id
+    except Exception as exc:
+        logger.warning(f"Featured image upload failed: {exc}")
+        return None
+
+
+def _build_payload(
+    article: str,
+    seo_meta: SEOMeta,
+    schemas_html: str,
+    category: str,
+    config: Config,
+    status: str = "publish",
+    featured_media_id: Optional[int] = None,
+) -> dict:
+    """Assemble the full WordPress REST API post payload."""
+    html_content = _markdown_to_html(article)
+    full_content = html_content + "\n\n" + schemas_html if schemas_html else html_content
+
+    category_label = CATEGORY_MAP.get(category, "Finance")
+    category_id = _get_or_create_category(category_label, config)
+
+    payload: dict = {
+        "title": seo_meta.title,
+        "content": full_content,
+        "status": status,
+        "slug": seo_meta.slug,
+        "categories": [category_id],
+        "meta": build_wp_meta(seo_meta, config),
+    }
+    if featured_media_id:
+        payload["featured_media"] = featured_media_id
+
+    return payload
+
+
+async def publish_post(
+    article: str,
+    seo_meta: SEOMeta,
+    schemas_html: str,
+    config: Config,
+    category: str = "global_market",
+    featured_image_url: Optional[str] = None,
+) -> dict:
+    """Publish article to WordPress. Returns the created post dict."""
+    logger.info(f"Publishing: {seo_meta.title}")
+
+    # Upload featured image if provided
+    featured_media_id = None
+    if featured_image_url:
+        featured_media_id = _upload_featured_image(
+            featured_image_url, seo_meta.title, config
+        )
+
+    payload = _build_payload(
+        article, seo_meta, schemas_html, category, config,
+        status="publish", featured_media_id=featured_media_id,
+    )
+
+    resp = requests.post(
+        f"{config.wp_url}/wp-json/wp/v2/posts",
+        json=payload,
+        headers=_auth_header(config),
+        timeout=30,
+    )
+    resp.raise_for_status()
+    post = resp.json()
+    logger.info(f"Published post ID={post['id']} URL={post['link']}")
+    return post
+
+
+def upload_local_image(file_path: Path, alt_text: str, title: str, config: Config) -> tuple[int, str]:
+    """
+    Upload a local PNG/JPEG to WordPress media library.
+    Returns (media_id, source_url).
+    """
+    with open(file_path, "rb") as fh:
+        img_data = fh.read()
+
+    ext = file_path.suffix.lower()
+    content_type = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+
+    headers = {
+        **_auth_header(config),
+        "Content-Disposition": f'attachment; filename="{file_path.name}"',
+        "Content-Type": content_type,
+    }
+    upload_url = f"{config.wp_url}/wp-json/wp/v2/media"
+    resp = requests.post(upload_url, data=img_data, headers=headers, timeout=60)
+    resp.raise_for_status()
+    media = resp.json()
+    media_id  = media["id"]
+    media_url = media["source_url"]
+
+    # Set alt text + title on the uploaded media
+    requests.post(
+        f"{upload_url}/{media_id}",
+        json={"alt_text": alt_text, "title": {"raw": title}},
+        headers=_auth_header(config),
+        timeout=15,
+    )
+    logger.info(f"Uploaded image → WP media ID={media_id}  url={media_url}")
+    return media_id, media_url
+
+
+def _split_markdown_sections(markdown: str) -> list[tuple[str, str]]:
+    """
+    Split markdown into (heading_line, body_text) tuples.
+    First block has heading="" if content appears before the first H2.
+    """
+    parts = re.split(r'(?=^#{1,2} )', markdown, flags=re.MULTILINE)
+    sections = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        lines = part.split("\n")
+        heading = lines[0] if re.match(r'^#{1,2} ', lines[0]) else ""
+        sections.append((heading, part))
+    return sections
+
+
+def build_html_with_images(
+    markdown: str,
+    images: list[dict],
+    wp_image_map: dict[str, str],     # section_id → wp_media_url
+    skip_sections: Optional[set] = None,  # section_ids to skip (used as featured image)
+) -> str:
+    """
+    Convert article markdown to HTML, inserting uploaded WP images after
+    each section that has one. Returns the final HTML string.
+    Sections in `skip_sections` are not embedded inline (they are used as featured/hero).
+    """
+    sections = _split_markdown_sections(markdown)
+    skip_sections = skip_sections or set()
+
+    # Build section_id → image data
+    img_lookup = {img["section_id"]: img for img in (images or [])}
+
+    html_blocks: list[str] = []
+    for idx, (heading_line, section_text) in enumerate(sections):
+        section_id = f"s{idx}"
+        html_blocks.append(_markdown_to_html(section_text))
+
+        if section_id in skip_sections:
+            continue  # Don't embed inline — shown as featured image at top
+
+        if section_id in img_lookup and section_id in wp_image_map:
+            img_data  = img_lookup[section_id]
+            img_url   = wp_image_map[section_id]
+            alt_text  = img_data.get("alt_text", "")
+            photographer = img_data.get("photographer", "")
+            source       = img_data.get("source", "ai")
+            ratio_css    = {
+                "16:9": "aspect-ratio:16/9",
+                "1:1":  "aspect-ratio:1/1",
+                "4:3":  "aspect-ratio:4/3",
+            }.get(img_data.get("selected_ratio", "16:9"), "")
+
+            caption = f"Photo by {photographer} / Pexels" if source == "pexels" and photographer else ""
+            fig_html = (
+                f'<figure class="wp-block-image size-large">'
+                f'<img src="{img_url}" alt="{alt_text}" '
+                f'style="width:100%;{ratio_css};object-fit:cover;" />'
+            )
+            if caption:
+                fig_html += f'<figcaption class="wp-element-caption">{caption}</figcaption>'
+            fig_html += '</figure>'
+            html_blocks.append(fig_html)
+
+    return "\n\n".join(html_blocks)
+
+
+async def update_post_with_images(
+    wp_post_id: int,
+    article_markdown: str,
+    images: list[dict],           # run["images"]
+    config: Config,
+    images_dir: Path,             # pipeline/state/images/{run_id}/
+) -> dict:
+    """
+    Upload each selected image to WP, embed them in the article HTML,
+    update the existing post. Returns the updated post dict.
+    """
+    from pipeline.state.image_store import IMAGES_DIR as IMG_ROOT
+
+    # ── 1. Upload each image that has a selected ratio ─────────────────────
+    wp_image_map: dict[str, str] = {}     # section_id → wp_url
+    featured_media_id: Optional[int] = None
+    first_uploaded_media_id: Optional[int] = None  # fallback hero if none marked
+    first_uploaded_section_id: Optional[str] = None
+
+    # If no image is explicitly marked as featured, auto-promote the first one
+    any_user_marked_featured = any(img.get("is_featured") for img in (images or []))
+
+    for img in (images or []):
+        section_id     = img.get("section_id", "")
+        selected_ratio = img.get("selected_ratio", "16:9")
+        ratios         = img.get("ratios", {})
+        api_path       = ratios.get(selected_ratio)     # "/api/images/{run_id}/filename.png"
+        alt_text       = img.get("alt_text", "")
+        is_featured    = img.get("is_featured", False)  # user-designated hero image
+
+        if not api_path:
+            continue
+
+        # Resolve API path → local filesystem path
+        parts      = api_path.lstrip("/").split("/")   # ["api", "images", run_id, filename]
+        local_path = IMG_ROOT / parts[2] / parts[3]
+
+        if not local_path.exists():
+            logger.warning(f"Image file not found: {local_path}")
+            continue
+
+        try:
+            media_id, media_url = upload_local_image(
+                local_path, alt_text, f"CADialogue image – {section_id}", config
+            )
+            wp_image_map[section_id] = media_url
+            if is_featured:
+                featured_media_id = media_id
+            # Track first successful upload as fallback hero
+            if first_uploaded_media_id is None:
+                first_uploaded_media_id = media_id
+                first_uploaded_section_id = section_id
+        except Exception as exc:
+            logger.error(f"Failed to upload image for {section_id}: {exc}")
+
+    # Fallback: if user didn't explicitly mark any image as hero,
+    # promote the first uploaded image so the post always has a featured image
+    if not featured_media_id and first_uploaded_media_id:
+        featured_media_id = first_uploaded_media_id
+        logger.info(f"Auto-promoting first image (section {first_uploaded_section_id}) as featured")
+
+    # ── 2. Build HTML with embedded images ───────────────────────────────────
+    featured_sections = {img["section_id"] for img in (images or []) if img.get("is_featured")}
+    # If we auto-promoted, also skip that section from inline embedding
+    if not any_user_marked_featured and first_uploaded_section_id:
+        featured_sections.add(first_uploaded_section_id)
+    content_html = build_html_with_images(
+        article_markdown, images, wp_image_map,
+        skip_sections=featured_sections,
+    )
+
+    # ── 3. Update WordPress post ──────────────────────────────────────────────
+    payload: dict = {"content": content_html}
+    if featured_media_id:
+        payload["featured_media"] = featured_media_id
+
+    resp = requests.post(
+        f"{config.wp_url}/wp-json/wp/v2/posts/{wp_post_id}",
+        json=payload,
+        headers=_auth_header(config),
+        timeout=45,
+    )
+    resp.raise_for_status()
+    post = resp.json()
+    logger.info(f"Updated WP post {wp_post_id} with {len(wp_image_map)} image(s)")
+    return post
+
+
+async def save_as_draft(
+    article: str,
+    seo_meta: SEOMeta,
+    schemas_html: str,
+    config: Config,
+    category: str = "global_market",
+) -> dict:
+    """Save article as WordPress draft (not published)."""
+    logger.info(f"Saving draft: {seo_meta.title}")
+
+    payload = _build_payload(
+        article, seo_meta, schemas_html, category, config, status="draft"
+    )
+
+    resp = requests.post(
+        f"{config.wp_url}/wp-json/wp/v2/posts",
+        json=payload,
+        headers=_auth_header(config),
+        timeout=30,
+    )
+    resp.raise_for_status()
+    post = resp.json()
+    logger.info(f"Saved draft ID={post['id']} URL={post['link']}")
+    return post

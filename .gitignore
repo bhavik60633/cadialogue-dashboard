@@ -1,0 +1,56 @@
+# ── Secrets (NEVER commit these) ─────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+
+# ── Dependencies ──────────────────────────────────────────────────────────────
+node_modules/
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# ── Next.js ───────────────────────────────────────────────────────────────────
+.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
+
+# ── Runtime state (machine-specific, will be on the server's persistent disk) ─
+pipeline/state/runs.json
+pipeline/state/batches.json
+pipeline/state/topic_library.json
+pipeline/state/users.json
+pipeline/state/images/
+pipeline/state/gemini_last_raw.txt
+pipeline/state/last_generation_error.txt
+pipeline/state/batch_last_error.txt
+pipeline/state/*.lock
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pipeline/logs/
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+.cache/
+.claude/
+homepage-design/
+"Finance tool yorilabs"/
+
+# ── One-off maintenance scripts with embedded credentials ────────────────────
+seo_fix_articles.py
+fix_topic_finder.py
+reset_failed_runs.py

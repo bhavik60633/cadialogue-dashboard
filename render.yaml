@@ -1,0 +1,55 @@
+# ─── Render.com one-click deploy blueprint ──────────────────────────────────
+# After pushing this repo to GitHub:
+#   1. Sign in to https://dashboard.render.com
+#   2. New → Blueprint → connect your GitHub repo
+#   3. Render will read this file and create the service automatically
+#   4. Fill in the secret environment variables in the dashboard
+#   5. (Optional) Settings → Custom Domains → add dashboard.cadialogue.in
+services:
+  - type: web
+    name: cadialogue-dashboard
+    runtime: docker
+    plan: starter            # $7/mo — never sleeps. Use 'free' for testing (sleeps after 15 min).
+    region: singapore        # Closest to India
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /login
+
+    disk:
+      name: state
+      mountPath: /data       # All runs/batches/users/images persist here
+      sizeGB: 1
+
+    envVars:
+      # ── Secrets (set values in Render dashboard, NOT in this file) ──────
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: PEXELS_API_KEY
+        sync: false
+      - key: NEWSAPI_KEY
+        sync: false
+      - key: WP_URL
+        sync: false
+      - key: WP_USERNAME
+        sync: false
+      - key: WP_APP_PASSWORD
+        sync: false
+      - key: AUTH_SECRET
+        generateValue: true   # Render auto-generates a strong random value
+      - key: PIPELINE_SERVICE_TOKEN
+        generateValue: true
+
+      # ── Non-secret defaults ──────────────────────────────────────────────
+      - key: OPENAI_MODEL
+        value: gpt-4o
+      - key: OPENAI_FAST_MODEL
+        value: gpt-4o-mini
+      - key: WP_SEO_PLUGIN
+        value: rankmath
+      - key: ANTHROPIC_API_KEY
+        value: not-used
+      - key: NODE_ENV
+        value: production
+      - key: NEXTAUTH_URL
+        sync: false           # Set this to your custom domain, e.g. https://dashboard.cadialogue.in
