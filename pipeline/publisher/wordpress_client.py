@@ -131,7 +131,11 @@ def _build_payload(
 ) -> dict:
     """Assemble the full WordPress REST API post payload."""
     html_content = _markdown_to_html(article)
-    full_content = html_content + "\n\n" + schemas_html if schemas_html else html_content
+    # NOTE: schemas are NOT embedded in post content.
+    # WordPress strips <script> tags from post bodies, leaving raw JSON visible.
+    # The cadialogue-homepage.php mu-plugin already injects correct NewsArticle
+    # JSON-LD for every post via wp_head — no duplication needed here.
+    full_content = html_content
 
     category_label = CATEGORY_MAP.get(category, "Finance")
     category_id = _get_or_create_category(category_label, config)

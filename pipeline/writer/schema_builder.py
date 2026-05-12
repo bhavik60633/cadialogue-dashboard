@@ -12,8 +12,8 @@ from .article_generator import SEOMeta
 
 logger = get_logger("schema_builder")
 
-SITE_NAME = "Finance Insights"  # Override via env if needed
-AUTHOR_NAME = "Finance Insights Editorial Team"
+SITE_NAME = "CADialogue"
+AUTHOR_NAME = "CADialogue Editorial Team"
 
 
 def _extract_faq_pairs(article_text: str) -> list[tuple[str, str]]:
