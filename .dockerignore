@@ -1,0 +1,25 @@
+# Exclude large/unnecessary files from Docker build context
+node_modules
+.next
+.git
+.github
+.claude
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+homepage-design
+"Finance tool yorilabs"
+Finance*tool*yorilabs
+pipeline/state
+pipeline/logs
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.local
+.vscode
+.idea

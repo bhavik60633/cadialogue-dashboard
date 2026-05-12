@@ -6,26 +6,39 @@
 # ──────────────────────────────────────────────────────────────────────────
 set -e
 
-# Ensure runtime state directory exists (Render persistent disk)
-mkdir -p /data/state/images
-# Bootstrap state files if missing
-[ -f /data/state/runs.json ]          || echo "[]"           > /data/state/runs.json
-[ -f /data/state/batches.json ]       || echo '{"batches":[]}'    > /data/state/batches.json
-[ -f /data/state/topic_library.json ] || echo '{"topics":[]}'    > /data/state/topic_library.json
-[ -f /data/state/users.json ]         || echo "[]"           > /data/state/users.json
+# ── 1. Set up persistent state directory ────────────────────────────────
+# If Render mounted a disk at /data, link pipeline/state there.
+# Otherwise just use the local folder.
+if [ -d /data ]; then
+  echo "[start.sh] Persistent disk found at /data — linking pipeline/state to it"
+  mkdir -p /data/state/images
+  rm -rf /app/pipeline/state 2>/dev/null || true
+  ln -sf /data/state /app/pipeline/state
+else
+  echo "[start.sh] No persistent disk — using ephemeral pipeline/state"
+  mkdir -p /app/pipeline/state/images
+fi
 
-# Start FastAPI in the background (binds to localhost only)
+# ── 2. Bootstrap empty state files if missing ──────────────────────────
+cd /app
+[ -f pipeline/state/runs.json ]          || echo "[]"               > pipeline/state/runs.json
+[ -f pipeline/state/batches.json ]       || echo '{"batches":[]}'   > pipeline/state/batches.json
+[ -f pipeline/state/topic_library.json ] || echo '{"topics":[]}'    > pipeline/state/topic_library.json
+[ -f pipeline/state/users.json ]         || echo "[]"               > pipeline/state/users.json
+
+# ── 3. Start FastAPI in the background (localhost only) ─────────────────
+echo "[start.sh] Starting FastAPI sidecar on 127.0.0.1:8765"
 python -m uvicorn pipeline.service.app:app \
     --host 127.0.0.1 --port 8765 \
     --log-level info &
-
 FASTAPI_PID=$!
 
-# Trap to stop FastAPI cleanly when Next.js exits
-trap "kill $FASTAPI_PID 2>/dev/null; exit 0" SIGTERM SIGINT
+# Clean shutdown on signal
+trap "echo '[start.sh] Shutting down...'; kill $FASTAPI_PID 2>/dev/null; exit 0" TERM INT
 
-# Wait a moment for FastAPI to boot
+# Give FastAPI a moment to bind
 sleep 3
 
-# Start Next.js in the foreground on the platform-assigned port
+# ── 4. Start Next.js in the foreground on the platform port ─────────────
+echo "[start.sh] Starting Next.js on 0.0.0.0:${PORT:-10000}"
 exec npx next start -H 0.0.0.0 -p "${PORT:-10000}"
