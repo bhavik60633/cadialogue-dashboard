@@ -705,6 +705,125 @@ async def library_promote(
     return {"run_id": run_id, "batch_id": batch_id, "topic": topic}
 
 
+# ── WordPress Post Manager routes ──────────────────────────────────────────────
+
+
+class WpPostData(BaseModel):
+    title: str | None = None
+    content: str | None = None          # HTML
+    status: str | None = None           # "publish" | "draft" | "private"
+    slug: str | None = None
+    excerpt: str | None = None
+    categories: list[int] | None = None
+    featured_media: int | None = None   # 0 = remove featured image
+
+
+@app.get("/wp/posts")
+async def wp_list_posts(
+    page: int = 1,
+    per_page: int = 20,
+    status: str = "any",
+    search: str = "",
+    _: None = Auth,
+) -> dict:
+    """List WordPress posts with pagination."""
+    import asyncio
+    from ..config import load_config
+    from ..publisher.wp_manager import list_posts
+
+    cfg = load_config()
+    posts, total, total_pages = await asyncio.to_thread(
+        list_posts, cfg, page, per_page, status, search
+    )
+    return {"posts": posts, "total": total, "total_pages": total_pages, "page": page}
+
+
+@app.get("/wp/posts/{post_id}")
+async def wp_get_post(post_id: int, _: None = Auth) -> dict:
+    """Get a single WordPress post by ID."""
+    import asyncio
+    from ..config import load_config
+    from ..publisher.wp_manager import get_post
+
+    cfg = load_config()
+    return await asyncio.to_thread(get_post, cfg, post_id)
+
+
+@app.post("/wp/posts")
+async def wp_create_post(body: WpPostData, _: None = Auth) -> dict:
+    """Create a new WordPress post."""
+    import asyncio
+    from ..config import load_config
+    from ..publisher.wp_manager import create_post
+
+    cfg = load_config()
+    data = body.model_dump(exclude_none=True)
+    if not data.get("title"):
+        raise HTTPException(400, "title is required")
+    if not data.get("content"):
+        raise HTTPException(400, "content is required")
+    return await asyncio.to_thread(create_post, cfg, data)
+
+
+@app.put("/wp/posts/{post_id}")
+async def wp_update_post(post_id: int, body: WpPostData, _: None = Auth) -> dict:
+    """Update an existing WordPress post."""
+    import asyncio
+    from ..config import load_config
+    from ..publisher.wp_manager import update_post
+
+    cfg = load_config()
+    data = body.model_dump(exclude_none=True)
+    if not data:
+        raise HTTPException(400, "No fields provided to update")
+    return await asyncio.to_thread(update_post, cfg, post_id, data)
+
+
+@app.delete("/wp/posts/{post_id}")
+async def wp_delete_post(post_id: int, force: bool = False, _: None = Auth) -> dict:
+    """Trash (or permanently delete) a WordPress post."""
+    import asyncio
+    from ..config import load_config
+    from ..publisher.wp_manager import delete_post
+
+    cfg = load_config()
+    return await asyncio.to_thread(delete_post, cfg, post_id, force)
+
+
+@app.post("/wp/media")
+async def wp_upload_media(
+    file: UploadFile = File(...),
+    alt_text: str = "",
+    title: str = "",
+    _: None = Auth,
+) -> dict:
+    """Upload an image to the WordPress media library."""
+    import asyncio
+    from ..config import load_config
+    from ..publisher.wp_manager import upload_media
+
+    img_bytes = await file.read()
+    if not img_bytes:
+        raise HTTPException(400, "Empty file uploaded")
+
+    cfg = load_config()
+    mime = file.content_type or "image/jpeg"
+    fname = file.filename or "upload.jpg"
+    return await asyncio.to_thread(upload_media, cfg, img_bytes, fname, mime, alt_text, title)
+
+
+@app.get("/wp/categories")
+async def wp_get_categories(_: None = Auth) -> dict:
+    """List all WordPress categories."""
+    import asyncio
+    from ..config import load_config
+    from ..publisher.wp_manager import get_categories
+
+    cfg = load_config()
+    cats = await asyncio.to_thread(get_categories, cfg)
+    return {"categories": cats}
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
