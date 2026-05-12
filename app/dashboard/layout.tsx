@@ -2,6 +2,7 @@ import Link from "next/link"
 import { auth, signOut } from "@/lib/auth"
 import { redirect } from "next/navigation"
 import { DashboardNav } from "@/components/dashboard/DashboardNav"
+import { UsageIndicator } from "@/components/dashboard/UsageIndicator"
 
 export default async function DashboardLayout({
   children,
@@ -49,11 +50,8 @@ export default async function DashboardLayout({
 
           {/* Right side */}
           <div className="ml-auto flex items-center gap-3">
-            {/* Status pill */}
-            <span className="hidden lg:flex items-center gap-1.5 text-[11px] text-neutral-600">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              Auto-runs 7 AM IST
-            </span>
+            {/* OpenAI usage indicator */}
+            <UsageIndicator />
 
             {/* Divider */}
             <span className="hidden lg:block h-4 w-px bg-neutral-800" aria-hidden />

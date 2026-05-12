@@ -812,6 +812,86 @@ async def wp_upload_media(
     return await asyncio.to_thread(upload_media, cfg, img_bytes, fname, mime, alt_text, title)
 
 
+@app.get("/usage/stats")
+async def usage_stats(_: None = Auth) -> dict:
+    """
+    Returns estimated OpenAI spend for the current month based on run history,
+    plus whether any AI job is currently running.
+
+    Cost model (conservative estimates):
+      Article generation (write + humanise): $0.09 (gpt-4o, ~5 000 tokens)
+      SEO meta + topic scoring per batch:    $0.002 (gpt-4o-mini, ~10 000 tokens)
+      AI image (gpt-image-1 / dall-e-3):     $0.06 per image
+      Pexels query generation:               ~$0 (gpt-4o-mini, <100 tokens)
+    """
+    import os
+    from datetime import datetime, timezone
+    from ..state import run_tracker
+
+    USD_PER_INR = 83.5          # approximate exchange rate
+    COST_ARTICLE_USD  = 0.09    # write + humanise
+    COST_BATCH_USD    = 0.002   # topic discovery + scoring per batch
+    COST_IMAGE_USD    = 0.06    # per generated AI image
+    MONTHLY_CAP_USD   = float(os.environ.get("OPENAI_MONTHLY_USD_CAP", "60"))
+
+    today = datetime.now(timezone.utc)
+    month_prefix = today.strftime("%Y-%m")   # e.g. "2026-05"
+
+    all_runs = run_tracker.load_all_runs()
+
+    article_count = 0
+    image_count   = 0
+    batch_count_set: set = set()
+
+    for run in all_runs:
+        started = run.get("started_at", "")
+        if not started.startswith(month_prefix):
+            continue
+
+        status = run.get("topic_status") or run.get("status") or ""
+        if status in ("article_ready", "images_ready", "publishing", "published", "completed"):
+            article_count += 1
+            batch_id = run.get("batch_id")
+            if batch_id:
+                batch_count_set.add(batch_id)
+
+        images = run.get("images") or []
+        for img in images:
+            # Only count AI-generated images (not Pexels/device)
+            if img.get("source") not in ("pexels", "device") and img.get("ratios"):
+                image_count += 1
+
+    estimated_usd = (
+        article_count * COST_ARTICLE_USD
+        + len(batch_count_set) * COST_BATCH_USD
+        + image_count * COST_IMAGE_USD
+    )
+    estimated_inr = estimated_usd * USD_PER_INR
+
+    # Is any AI job currently running?
+    active_statuses = {"generating", "publishing"}
+    is_active = any(
+        run.get("topic_status") in active_statuses
+        for run in all_runs
+    ) or any(
+        job_registry.is_running(jid)
+        for jid in list(job_registry._jobs.keys())  # type: ignore[attr-defined]
+    )
+
+    return {
+        "month": month_prefix,
+        "article_count": article_count,
+        "image_count": image_count,
+        "batch_count": len(batch_count_set),
+        "estimated_usd": round(estimated_usd, 3),
+        "estimated_inr": round(estimated_inr, 1),
+        "monthly_cap_usd": MONTHLY_CAP_USD,
+        "monthly_cap_inr": round(MONTHLY_CAP_USD * USD_PER_INR, 0),
+        "pct_used": round((estimated_usd / MONTHLY_CAP_USD) * 100, 1) if MONTHLY_CAP_USD else 0,
+        "is_active": is_active,
+    }
+
+
 @app.get("/wp/search-photos")
 async def wp_search_photos(
     q: str = "",
