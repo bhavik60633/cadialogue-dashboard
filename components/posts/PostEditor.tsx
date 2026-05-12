@@ -95,39 +95,57 @@ function blocksToHTML(blocks: Block[]): string {
   }).filter(Boolean).join("\n\n")
 }
 
+/** Recursively walk elements and push recognised block types into `out` */
+function parseElements(elements: Element[], out: Block[]): void {
+  for (const el of elements) {
+    const tag = el.tagName.toLowerCase()
+
+    if (tag === "p") {
+      // Skip <p> tags that only contain an image (handled by figure below)
+      if (el.querySelector("img") && !el.textContent?.trim()) continue
+      const text = el.textContent?.trim() ?? ""
+      if (text) out.push({ id: uid(), type: "paragraph", content: text })
+
+    } else if (tag === "h1") {
+      // H1 is usually the post title — skip it
+      continue
+
+    } else if (tag === "h2") {
+      const text = el.textContent?.trim() ?? ""
+      if (text) out.push({ id: uid(), type: "heading", level: 2, content: text })
+
+    } else if (tag === "h3") {
+      const text = el.textContent?.trim() ?? ""
+      if (text) out.push({ id: uid(), type: "heading", level: 3, content: text })
+
+    } else if (tag === "ul" || tag === "ol") {
+      const items = Array.from(el.querySelectorAll("li"))
+        .map((li) => `- ${li.textContent?.trim() ?? ""}`)
+        .filter((l) => l.length > 2)
+      if (items.length) out.push({ id: uid(), type: "list", content: items.join("\n") })
+
+    } else if (tag === "figure") {
+      const img = el.querySelector("img")
+      if (img?.src) out.push({ id: uid(), type: "image", url: img.src, alt: img.alt || "" })
+
+    } else if (
+      tag === "div" || tag === "section" || tag === "article" ||
+      tag === "blockquote" || tag === "aside"
+    ) {
+      // Container element — recurse into children instead of dumping all text
+      parseElements(Array.from(el.children), out)
+    }
+    // All other tags (script, style, nav, etc.) are silently ignored
+  }
+}
+
 /** Parse WordPress HTML back into blocks (runs client-side only) */
 function htmlToBlocks(html: string): Block[] {
   if (typeof document === "undefined") return [{ id: uid(), type: "paragraph", content: "" }]
   const parser = new DOMParser()
   const doc = parser.parseFromString(html, "text/html")
   const blocks: Block[] = []
-
-  for (const el of Array.from(doc.body.children)) {
-    const tag = el.tagName.toLowerCase()
-    if (tag === "p") {
-      const text = el.textContent?.trim() ?? ""
-      if (text) blocks.push({ id: uid(), type: "paragraph", content: text })
-    } else if (tag === "h2") {
-      const text = el.textContent?.trim() ?? ""
-      if (text) blocks.push({ id: uid(), type: "heading", level: 2, content: text })
-    } else if (tag === "h3") {
-      const text = el.textContent?.trim() ?? ""
-      if (text) blocks.push({ id: uid(), type: "heading", level: 3, content: text })
-    } else if (tag === "ul" || tag === "ol") {
-      const items = Array.from(el.querySelectorAll("li"))
-        .map((li) => `- ${li.textContent?.trim() ?? ""}`)
-        .filter((l) => l.length > 2)
-      if (items.length) blocks.push({ id: uid(), type: "list", content: items.join("\n") })
-    } else if (tag === "figure") {
-      const img = el.querySelector("img")
-      if (img?.src) blocks.push({ id: uid(), type: "image", url: img.src, alt: img.alt || "" })
-    } else if (tag === "div") {
-      // Some WP blocks are wrapped in divs — try to extract text
-      const text = el.textContent?.trim() ?? ""
-      if (text && text.length > 10) blocks.push({ id: uid(), type: "paragraph", content: text })
-    }
-  }
-
+  parseElements(Array.from(doc.body.children), blocks)
   return blocks.length > 0 ? blocks : [{ id: uid(), type: "paragraph", content: "" }]
 }
 
@@ -786,8 +804,10 @@ export function PostEditor({ initialData, mode }: Props) {
       title: title.trim(),
       content: html,
       status: targetStatus,
+      // Always send excerpt: either the user's text, or "" to reset it so
+      // WordPress auto-generates a clean short excerpt from the new content
+      excerpt: excerpt.trim(),
       ...(slug.trim() ? { slug: slug.trim() } : {}),
-      ...(excerpt.trim() ? { excerpt: excerpt.trim() } : {}),
       ...(categoryId ? { categories: [categoryId] } : {}),
     }
 
