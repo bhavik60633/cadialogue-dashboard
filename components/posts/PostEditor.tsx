@@ -207,6 +207,7 @@ const BLOCK_TYPES: { type: BlockType; label: string; icon: React.ReactNode }[] =
   },
 ]
 
+/** Thin divider with always-visible "+" between blocks */
 function AddBlockButton({ onAdd }: { onAdd: (type: BlockType) => void }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -220,12 +221,14 @@ function AddBlockButton({ onAdd }: { onAdd: (type: BlockType) => void }) {
   }, [])
 
   return (
-    <div ref={ref} className="relative flex items-center justify-center py-1 group">
-      <div className="absolute inset-x-0 top-1/2 -translate-y-px h-px bg-neutral-800 opacity-0 group-hover:opacity-100 transition-opacity" />
+    <div ref={ref} className="relative flex items-center justify-center py-1">
+      {/* Divider line */}
+      <div className="absolute inset-x-0 top-1/2 -translate-y-px h-px bg-neutral-800" />
+      {/* Always-visible "+" button */}
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="relative z-10 h-6 w-6 rounded-full border border-neutral-700 bg-neutral-900 flex items-center justify-center text-neutral-500 hover:text-neutral-200 hover:border-neutral-500 hover:bg-neutral-800 transition-all opacity-0 group-hover:opacity-100"
+        className="relative z-10 h-6 w-6 rounded-full border border-neutral-700 bg-neutral-900 flex items-center justify-center text-neutral-500 hover:text-neutral-200 hover:border-neutral-500 hover:bg-neutral-800 transition-all"
         title="Add block"
       >
         <svg className="h-3 w-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth={2}>
@@ -234,20 +237,43 @@ function AddBlockButton({ onAdd }: { onAdd: (type: BlockType) => void }) {
       </button>
 
       {open && (
-        <div className="absolute z-20 top-8 left-1/2 -translate-x-1/2 flex gap-1 p-1 rounded-lg border border-neutral-700 bg-[#111113] shadow-xl">
+        <div className="absolute z-20 top-8 left-1/2 -translate-x-1/2 flex gap-1 p-1.5 rounded-xl border border-neutral-700 bg-[#111113] shadow-2xl">
           {BLOCK_TYPES.map(({ type, label, icon }) => (
             <button
               key={type}
               type="button"
               onClick={() => { onAdd(type); setOpen(false) }}
-              className="flex flex-col items-center gap-1 px-3 py-2 rounded-md text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 transition-all min-w-[52px]"
+              className="flex flex-col items-center gap-1.5 px-4 py-2.5 rounded-lg text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800 transition-all min-w-[60px]"
             >
               {icon}
-              <span className="text-[10px] whitespace-nowrap">{label}</span>
+              <span className="text-[11px] whitespace-nowrap">{label}</span>
             </button>
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+/** Prominent bottom toolbar — always visible, one click per block type */
+function BottomAddBar({ onAdd }: { onAdd: (type: BlockType) => void }) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {BLOCK_TYPES.map(({ type, label, icon }) => (
+        <button
+          key={type}
+          type="button"
+          onClick={() => onAdd(type)}
+          className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg border text-[13px] font-medium transition-all ${
+            type === "image"
+              ? "border-red-800/60 bg-red-950/20 text-red-400 hover:bg-red-900/30 hover:border-red-700"
+              : "border-neutral-800 bg-neutral-900/60 text-neutral-400 hover:text-neutral-200 hover:border-neutral-700 hover:bg-neutral-800/60"
+          }`}
+        >
+          {icon}
+          {type === "image" ? "Add Image" : `Add ${label}`}
+        </button>
+      ))}
     </div>
   )
 }
@@ -811,6 +837,9 @@ export function PostEditor({ initialData, mode }: Props) {
             <AddBlockButton onAdd={(type) => addBlockAfter(block.id, type)} />
           </div>
         ))}
+
+        {/* ── Always-visible add toolbar at the bottom ── */}
+        <BottomAddBar onAdd={(type) => addBlockAfter(blocks[blocks.length - 1].id, type)} />
       </div>
 
       {/* ── Error ── */}
