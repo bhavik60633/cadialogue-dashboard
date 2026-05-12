@@ -1,9 +1,5 @@
-import { VercelV0Chat } from "@/components/ui/v0-ai-chat";
+import { redirect } from "next/navigation";
 
 export default function Home() {
-  return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-black p-8">
-      <VercelV0Chat />
-    </main>
-  );
+  redirect("/dashboard");
 }
