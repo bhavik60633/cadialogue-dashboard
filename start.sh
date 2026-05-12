@@ -19,7 +19,12 @@ if [ -d /data ]; then
     name="${entry%%:*}"
     default="${entry#*:}"
     if [ ! -f "/data/state/$name" ]; then
-      echo "$default" > "/data/state/$name" 2>&1 || true
+      if [ -f "pipeline/state/$name" ] && [ ! -L "pipeline/state/$name" ]; then
+        echo "[start.sh] Copying default $name to /data/state/"
+        cp "pipeline/state/$name" "/data/state/$name" 2>&1 || true
+      else
+        echo "$default" > "/data/state/$name" 2>&1 || true
+      fi
     fi
   done
 
@@ -36,9 +41,15 @@ if [ -d /data ]; then
     rm -rf pipeline/state/images 2>&1 || true
   fi
   ln -sfn /data/state/images pipeline/state/images 2>&1 || true
+
+  # Ensure default admin user exists
+  echo "[start.sh] Ensuring default admin user exists..."
+  python -m pipeline.scripts.add_user bhavikvaid65@gmail.com --password=Cadialogue@2026 --name="Bhavik Vaid" --role=admin || true
 else
   echo "[start.sh] No persistent disk — using ephemeral pipeline/state/"
   mkdir -p pipeline/state/images || true
+  # Ensure default admin user exists locally as well
+  python -m pipeline.scripts.add_user bhavikvaid65@gmail.com --password=Cadialogue@2026 --name="Bhavik Vaid" --role=admin || true
 fi
 
 echo "[start.sh] pipeline/state contents AFTER setup:"
