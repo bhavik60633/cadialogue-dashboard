@@ -16,29 +16,70 @@ logger = get_logger("batch_runner")
 
 async def run_morning_batch(n: int = 10) -> dict:
     """
-    Discover n topics, create a MorningBatch and n TopicRun entries.
+    Discover n topics and write them to the state files.
+    On refresh: slots that already have an approved / generating / article_ready /
+    images_ready / publishing / published / failed run are PRESERVED unchanged.
+    Only pending or rejected slots are replaced with fresh topics.
     Returns {"batch_id": "batch_2026-05-07", "topic_run_ids": [...]}
     """
     config = load_config()
     logger.info(f"Starting morning batch discovery (n={n})…")
 
-    # ── Step 1: Market snapshot ───────────────────────────────────────────────
-    market = await fetch_market_snapshot()
-    logger.info("Market snapshot fetched")
-
-    # ── Step 2: Topic discovery ───────────────────────────────────────────────
-    topics = await find_topics_batch(config, market, n=n)
-    logger.info(f"Discovered {len(topics)} topics")
-
-    # ── Step 3: Determine batch date / ID ────────────────────────────────────
     from datetime import datetime, timezone
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     batch_id = f"batch_{today}"
 
-    # ── Step 4: Create TopicRun entries ──────────────────────────────────────
-    run_ids = []
-    for idx, topic in enumerate(topics):
-        # Build rich source list
+    # Statuses that mean a run has real work done — do NOT overwrite on refresh
+    PRESERVE = frozenset({
+        "approved", "generating", "article_ready",
+        "images_ready", "publishing", "published", "failed",
+    })
+
+    # ── Step 1: Find already-occupied slots ───────────────────────────────────
+    # Scan generously (n + 20) to catch any manually-promoted runs beyond slot n
+    preserved: dict[int, str] = {}   # slot_index → run_id
+    for slot in range(n + 20):
+        run_id = f"{today}-t{slot:02d}"
+        existing = run_tracker.load_run(run_id)
+        if existing and existing.get("topic_status") in PRESERVE:
+            preserved[slot] = run_id
+
+    new_needed = max(0, n - len(preserved))
+    logger.info(
+        f"Preserved {len(preserved)} existing run(s) — "
+        f"fetching {new_needed} new topic(s)"
+    )
+
+    # ── Step 2: Market snapshot ───────────────────────────────────────────────
+    market = await fetch_market_snapshot()
+    logger.info("Market snapshot fetched")
+
+    # ── Step 3: Topic discovery (only as many fresh slots as we need) ─────────
+    topics = await find_topics_batch(config, market, n=new_needed) if new_needed > 0 else []
+    logger.info(f"Discovered {len(topics)} new topic(s)")
+
+    # ── Step 4: Assign new topics to free slots ───────────────────────────────
+    run_ids: list[str] = []
+    topic_iter = iter(topics)
+
+    for slot in range(n + 20):
+        if len(run_ids) >= n:
+            break
+
+        if slot in preserved:
+            # Keep the existing run untouched
+            run_ids.append(preserved[slot])
+            logger.info(
+                f"  [{slot+1:02d}] ↺ kept  {preserved[slot]}"
+                f"  ({run_tracker.load_run(preserved[slot]).get('topic_status', '?')})"
+            )
+            continue
+
+        # Free slot — fill with the next new topic
+        topic = next(topic_iter, None)
+        if topic is None:
+            break
+
         rich_sources = getattr(topic, "rich_sources", None)
         if rich_sources and isinstance(rich_sources[0], dict):
             sources = rich_sources
@@ -54,13 +95,16 @@ async def run_morning_batch(n: int = 10) -> dict:
             "added_by": None,
             "keywords": topic.keywords,
         }
-        run_id = run_tracker.init_topic_run(batch_id, topic_meta, run_index=idx)
+        run_id = run_tracker.init_topic_run(batch_id, topic_meta, run_index=slot)
         run_ids.append(run_id)
-        logger.info(f"  [{idx+1:02d}] {topic.title[:60]} -> {run_id}")
+        logger.info(f"  [{slot+1:02d}] new   {topic.title[:60]} -> {run_id}")
 
-    # ── Step 5: Create / replace batch record ────────────────────────────────
+    # ── Step 5: Write batch record ────────────────────────────────────────────
     batch = batch_tracker.create_batch(run_ids)
-    logger.info(f"Batch {batch['id']} created with {len(run_ids)} runs")
+    logger.info(
+        f"Batch {batch['id']} updated: {len(run_ids)} total "
+        f"({len(preserved)} preserved, {len(topics)} new)"
+    )
 
     return {"batch_id": batch["id"], "topic_run_ids": run_ids}
 
