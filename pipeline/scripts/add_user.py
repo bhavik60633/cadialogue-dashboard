@@ -58,27 +58,31 @@ def main() -> None:
 
     users = _load()
 
-    if any(u.get("email") == args.email for u in users):
-        print(f"ERROR: '{args.email}' already exists. Remove them from users.json first.")
-        sys.exit(1)
-
     hashed = bcrypt.hashpw(
         args.password.encode("utf-8"), bcrypt.gensalt(rounds=10)
     ).decode("utf-8")
 
-    user = {
-        "email": args.email,
-        "name": args.name or args.email.split("@")[0],
-        "bcrypt_hash": hashed,
-        "role": args.role,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
+    existing_user = next((u for u in users if u.get("email") == args.email), None)
 
-    users.append(user)
+    if existing_user:
+        existing_user["bcrypt_hash"] = hashed
+        existing_user["name"] = args.name or args.email.split("@")[0]
+        existing_user["role"] = args.role
+        print(f"[OK] User '{args.email}' updated (role: {args.role})")
+    else:
+        user = {
+            "email": args.email,
+            "name": args.name or args.email.split("@")[0],
+            "bcrypt_hash": hashed,
+            "role": args.role,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        users.append(user)
+        print(f"[OK] User '{args.email}' added (role: {args.role})")
+
     _save(users)
-
-    print(f"[OK] User '{args.email}' added (role: {args.role})")
-    print(f"   Name : {user['name']}")
+    final_user = existing_user if existing_user else user
+    print(f"   Name : {final_user['name']}")
     print(f"   Hash : {hashed[:30]}...")
     print(f"\nLogin at: http://localhost:3000/login")
 
