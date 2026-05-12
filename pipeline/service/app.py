@@ -812,6 +812,77 @@ async def wp_upload_media(
     return await asyncio.to_thread(upload_media, cfg, img_bytes, fname, mime, alt_text, title)
 
 
+@app.get("/wp/search-photos")
+async def wp_search_photos(
+    q: str = "",
+    per_page: int = 12,
+    _: None = Auth,
+) -> dict:
+    """
+    Search Pexels for stock photos matching a keyword query.
+    Returns up to per_page photo objects with thumb_url and full_url.
+    """
+    if not q.strip():
+        raise HTTPException(400, "q (search query) is required")
+
+    from ..config import load_config
+    from ..writer.stock_photo_fetcher import _pexels_search
+
+    cfg = load_config()
+    if not cfg.pexels_api_key:
+        raise HTTPException(503, "PEXELS_API_KEY is not configured on this server")
+
+    import asyncio
+    photos = await asyncio.to_thread(
+        _pexels_search, q.strip(), cfg.pexels_api_key, min(per_page, 24)
+    )
+    return {"photos": [p.to_dict() for p in photos], "query": q}
+
+
+class UsePexelsPhotoRequest(BaseModel):
+    full_url: str
+    description: str = ""
+    photographer: str = ""
+
+
+@app.post("/wp/use-pexels-photo")
+async def wp_use_pexels_photo(body: UsePexelsPhotoRequest, _: None = Auth) -> dict:
+    """
+    Download a Pexels photo by URL and upload it directly to the
+    WordPress media library. Returns the WP media object (id, source_url).
+    """
+    import asyncio
+    import requests as rq
+
+    from ..config import load_config
+    from ..publisher.wp_manager import upload_media
+
+    if not body.full_url:
+        raise HTTPException(400, "full_url is required")
+
+    cfg = load_config()
+
+    # Download the Pexels image
+    try:
+        img_bytes = await asyncio.to_thread(
+            lambda: rq.get(body.full_url, timeout=30).content
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"Failed to download photo: {exc}")
+
+    # Derive a filename from the URL
+    filename = body.full_url.split("?")[0].split("/")[-1] or "pexels-photo.jpg"
+    if "." not in filename:
+        filename += ".jpg"
+
+    mime = "image/jpeg" if filename.lower().endswith((".jpg", ".jpeg")) else "image/png"
+    alt  = body.description or f"Photo by {body.photographer}"
+    title = body.description or filename
+
+    media = await asyncio.to_thread(upload_media, cfg, img_bytes, filename, mime, alt, title)
+    return {"id": media["id"], "source_url": media["source_url"], "alt": alt}
+
+
 @app.get("/wp/categories")
 async def wp_get_categories(_: None = Auth) -> dict:
     """List all WordPress categories."""

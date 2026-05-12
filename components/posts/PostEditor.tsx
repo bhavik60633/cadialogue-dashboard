@@ -362,18 +362,34 @@ function HeadingBlockEditor({ block, onChange, onLevelChange }: {
   )
 }
 
+interface PexelsPhoto {
+  pexels_id: number
+  description: string
+  photographer: string
+  thumb_url: string
+  full_url: string
+}
+
 function ImageBlockEditor({
   block,
   onAltChange,
   onUpload,
   onRemoveImage,
+  onSetUrl,
 }: {
   block: ImageBlock
   onAltChange: (alt: string) => void
   onUpload: (file: File) => void
   onRemoveImage: () => void
+  onSetUrl: (url: string, alt: string) => void
 }) {
   const fileRef = useRef<HTMLInputElement>(null)
+  const [tab, setTab] = useState<"upload" | "search">("upload")
+  const [query, setQuery] = useState("")
+  const [results, setResults] = useState<PexelsPhoto[]>([])
+  const [searching, setSearching] = useState(false)
+  const [searchErr, setSearchErr] = useState<string | null>(null)
+  const [adopting, setAdopting] = useState<number | null>(null) // pexels_id being adopted
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
@@ -381,23 +397,88 @@ function ImageBlockEditor({
     if (file?.type.startsWith("image/")) onUpload(file)
   }
 
-  return (
-    <div className="space-y-2 pr-16">
-      {!block.url && !block.uploading && (
-        <div
-          onDrop={handleDrop}
-          onDragOver={(e) => e.preventDefault()}
-          onClick={() => fileRef.current?.click()}
-          className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-neutral-700 hover:border-neutral-500 bg-neutral-900/40 cursor-pointer py-8 transition-colors"
-        >
-          <svg className="h-8 w-8 text-neutral-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-          </svg>
-          <p className="text-[13px] text-neutral-500">Click to upload or drag & drop</p>
-          <p className="text-[11px] text-neutral-700">PNG, JPG, WEBP up to 10MB</p>
-        </div>
-      )}
+  const handleSearch = async () => {
+    if (!query.trim()) return
+    setSearching(true)
+    setSearchErr(null)
+    setResults([])
+    try {
+      const res = await fetch(`/api/py/wp/search-photos?q=${encodeURIComponent(query)}&per_page=12`)
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.detail || err.error || `HTTP ${res.status}`)
+      }
+      const data = await res.json()
+      setResults(data.photos ?? [])
+      if (!data.photos?.length) setSearchErr("No photos found — try different keywords")
+    } catch (err: unknown) {
+      setSearchErr(err instanceof Error ? err.message : "Search failed")
+    } finally {
+      setSearching(false)
+    }
+  }
 
+  const handlePickPhoto = async (photo: PexelsPhoto) => {
+    setAdopting(photo.pexels_id)
+    try {
+      const res = await fetch("/api/py/wp/use-pexels-photo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          full_url: photo.full_url,
+          description: photo.description,
+          photographer: photo.photographer,
+        }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.detail || err.error || "Failed to use photo")
+      }
+      const data = await res.json()
+      onSetUrl(data.source_url, data.alt || photo.description)
+    } catch (err: unknown) {
+      setSearchErr(err instanceof Error ? err.message : "Failed to add photo")
+    } finally {
+      setAdopting(null)
+    }
+  }
+
+  // If image already chosen, just show preview + alt text
+  if (block.url && !block.uploading) {
+    return (
+      <div className="rounded-lg border border-neutral-800 overflow-hidden pr-16">
+        <div className="relative bg-neutral-950">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={block.previewUrl || block.url}
+            alt={block.alt || "image"}
+            className="w-full object-cover max-h-56"
+          />
+          <button
+            type="button"
+            onClick={onRemoveImage}
+            className="absolute top-2 right-2 h-6 w-6 rounded-full bg-black/60 flex items-center justify-center text-neutral-300 hover:text-white hover:bg-black transition-all"
+            title="Remove image"
+          >
+            <svg className="h-3 w-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" d="M2 2l8 8M10 2L2 10"/></svg>
+          </button>
+        </div>
+        <div className="px-3 py-2 bg-neutral-900/60 border-t border-neutral-800">
+          <input
+            type="text"
+            value={block.alt}
+            onChange={(e) => onAltChange(e.target.value)}
+            placeholder="Alt text (describe the image for accessibility + SEO)"
+            className="w-full bg-transparent text-[12px] text-neutral-400 placeholder-neutral-700 focus:outline-none focus:text-neutral-200 transition-colors"
+          />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3 pr-16">
+      {/* Uploading spinner */}
       {block.uploading && (
         <div className="flex items-center gap-3 rounded-lg border border-neutral-700 bg-neutral-900/40 p-4">
           <svg className="h-5 w-5 animate-spin text-red-400" viewBox="0 0 24 24" fill="none">
@@ -408,48 +489,139 @@ function ImageBlockEditor({
         </div>
       )}
 
+      {/* Upload error */}
       {block.uploadError && (
         <div className="flex items-center gap-2 rounded-lg border border-red-800 bg-red-950/30 px-3 py-2">
           <svg className="h-4 w-4 text-red-400 shrink-0" fill="currentColor" viewBox="0 0 20 20">
             <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd"/>
           </svg>
           <span className="text-[12px] text-red-300">{block.uploadError}</span>
-          <button type="button" onClick={() => fileRef.current?.click()} className="ml-auto text-[12px] text-red-400 hover:text-red-200 underline">
-            Retry
-          </button>
+          <button type="button" onClick={() => fileRef.current?.click()} className="ml-auto text-[12px] text-red-400 hover:text-red-200 underline">Retry</button>
         </div>
       )}
 
-      {block.url && !block.uploading && (
-        <div className="rounded-lg border border-neutral-800 overflow-hidden">
-          {/* Preview */}
-          <div className="relative bg-neutral-950">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={block.previewUrl || block.url}
-              alt={block.alt || "uploaded image"}
-              className="w-full object-cover max-h-48"
-            />
+      {!block.uploading && (
+        <>
+          {/* Tab bar */}
+          <div className="flex rounded-lg border border-neutral-800 overflow-hidden text-[12px] font-medium w-fit">
             <button
               type="button"
-              onClick={onRemoveImage}
-              className="absolute top-2 right-2 h-6 w-6 rounded-full bg-black/60 flex items-center justify-center text-neutral-300 hover:text-white hover:bg-black transition-all"
-              title="Remove image"
+              onClick={() => setTab("upload")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 transition-all ${tab === "upload" ? "bg-neutral-700 text-neutral-100" : "bg-neutral-900 text-neutral-500 hover:text-neutral-300"}`}
             >
-              <svg className="h-3 w-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" d="M2 2l8 8M10 2L2 10"/></svg>
+              <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 10V3M5 6l3-3 3 3M2 12v1a1 1 0 001 1h10a1 1 0 001-1v-1" />
+              </svg>
+              Upload from device
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab("search")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 transition-all border-l border-neutral-800 ${tab === "search" ? "bg-neutral-700 text-neutral-100" : "bg-neutral-900 text-neutral-500 hover:text-neutral-300"}`}
+            >
+              <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
+                <circle cx="7" cy="7" r="4.5"/><path strokeLinecap="round" d="M10.5 10.5l3 3"/>
+              </svg>
+              Search Pexels photos
             </button>
           </div>
-          {/* Alt text */}
-          <div className="px-3 py-2 bg-neutral-900/60 border-t border-neutral-800">
-            <input
-              type="text"
-              value={block.alt}
-              onChange={(e) => onAltChange(e.target.value)}
-              placeholder="Alt text (describe the image for accessibility + SEO)"
-              className="w-full bg-transparent text-[12px] text-neutral-400 placeholder-neutral-700 focus:outline-none focus:text-neutral-200 transition-colors"
-            />
-          </div>
-        </div>
+
+          {/* Upload tab */}
+          {tab === "upload" && (
+            <div
+              onDrop={handleDrop}
+              onDragOver={(e) => e.preventDefault()}
+              onClick={() => fileRef.current?.click()}
+              className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-neutral-700 hover:border-neutral-500 bg-neutral-900/40 cursor-pointer py-8 transition-colors"
+            >
+              <svg className="h-8 w-8 text-neutral-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+              <p className="text-[13px] text-neutral-500">Click to upload or drag & drop</p>
+              <p className="text-[11px] text-neutral-700">PNG, JPG, WEBP up to 10MB</p>
+            </div>
+          )}
+
+          {/* Search tab */}
+          {tab === "search" && (
+            <div className="space-y-3">
+              {/* Search bar */}
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                  placeholder="e.g. Indian stock market, RBI headquarters, gold coins…"
+                  className="flex-1 px-3 py-2 rounded-lg border border-neutral-700 bg-neutral-900 text-[13px] text-neutral-200 placeholder-neutral-600 focus:outline-none focus:border-neutral-500 transition-colors"
+                />
+                <button
+                  type="button"
+                  onClick={handleSearch}
+                  disabled={searching || !query.trim()}
+                  className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 disabled:opacity-50 text-[13px] font-medium text-white transition-all flex items-center gap-2 shrink-0"
+                >
+                  {searching
+                    ? <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z"/></svg>
+                    : <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2}><circle cx="7" cy="7" r="4.5"/><path strokeLinecap="round" d="M10.5 10.5l3 3"/></svg>
+                  }
+                  {searching ? "Searching…" : "Search"}
+                </button>
+              </div>
+
+              {/* Error */}
+              {searchErr && (
+                <p className="text-[12px] text-red-400">{searchErr}</p>
+              )}
+
+              {/* Results grid */}
+              {results.length > 0 && (
+                <div className="grid grid-cols-3 gap-2">
+                  {results.map((photo) => (
+                    <button
+                      key={photo.pexels_id}
+                      type="button"
+                      onClick={() => handlePickPhoto(photo)}
+                      disabled={adopting !== null}
+                      className="group relative rounded-lg overflow-hidden border border-neutral-800 hover:border-neutral-600 transition-all aspect-video bg-neutral-900 disabled:opacity-60"
+                      title={photo.description}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={photo.thumb_url}
+                        alt={photo.description}
+                        className="w-full h-full object-cover"
+                      />
+                      {/* Hover overlay */}
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-all flex items-center justify-center">
+                        {adopting === photo.pexels_id ? (
+                          <svg className="h-5 w-5 animate-spin text-white" viewBox="0 0 24 24" fill="none">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z"/>
+                          </svg>
+                        ) : (
+                          <span className="opacity-0 group-hover:opacity-100 text-white text-[11px] font-semibold bg-black/60 px-2 py-1 rounded-md transition-all">
+                            Use photo
+                          </span>
+                        )}
+                      </div>
+                      {/* Photographer */}
+                      <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/70 to-transparent px-1.5 py-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <p className="text-[9px] text-neutral-300 truncate">📷 {photo.photographer}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {results.length > 0 && (
+                <p className="text-[10px] text-neutral-700 text-right">
+                  Photos from <a href="https://www.pexels.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-neutral-500">Pexels</a> — free to use
+                </p>
+              )}
+            </div>
+          )}
+        </>
       )}
 
       <input
@@ -823,6 +995,7 @@ export function PostEditor({ initialData, mode }: Props) {
                   onAltChange={(alt) => updateBlock(block.id, { alt })}
                   onUpload={(file) => uploadImage(block.id, file)}
                   onRemoveImage={() => updateBlock(block.id, { url: "", previewUrl: undefined, mediaId: undefined, uploadError: undefined })}
+                  onSetUrl={(url, alt) => updateBlock(block.id, { url, alt, previewUrl: undefined, uploading: false, uploadError: undefined })}
                 />
               )}
               {block.type === "list" && (
