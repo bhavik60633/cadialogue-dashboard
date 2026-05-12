@@ -14,7 +14,15 @@ __pycache__
 homepage-design
 "Finance tool yorilabs"
 Finance*tool*yorilabs
-pipeline/state
+
+# Runtime state DATA files only — keep the Python code in pipeline/state/*.py
+pipeline/state/runs.json
+pipeline/state/batches.json
+pipeline/state/topic_library.json
+pipeline/state/users.json
+pipeline/state/images
+pipeline/state/*.txt
+pipeline/state/*.lock
 pipeline/logs
 *.log
 .DS_Store
