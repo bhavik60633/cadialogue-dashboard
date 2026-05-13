@@ -35,11 +35,15 @@ Anti-spam safeguards:
 """
 from __future__ import annotations
 
+import datetime
 import json
 import re
 import time
 from pathlib import Path
 from typing import Literal
+
+# Always use the current calendar year — no more hardcoded 2025
+_YEAR = str(datetime.date.today().year)
 
 from ..config import Config
 from ..utils.json_utils import gemini_json_call
@@ -91,32 +95,32 @@ TEMPLATES: dict[TemplateType, dict] = {
 # Pre-defined page variants for cadialogue.in
 CADIALOGUE_PROGRAMMATIC_PAGES = [
     # best_for
-    {"template": "best_for", "subject": "accounting software", "audience": "Chartered Accountants", "year": "2025"},
-    {"template": "best_for", "subject": "stock trading apps", "audience": "beginners", "year": "2025"},
-    {"template": "best_for", "subject": "mutual funds", "audience": "salaried professionals", "year": "2025"},
-    {"template": "best_for", "subject": "tax filing software", "audience": "freelancers", "year": "2025"},
-    {"template": "best_for", "subject": "NPS pension plans", "audience": "government employees", "year": "2025"},
+    {"template": "best_for", "subject": "accounting software", "audience": "Chartered Accountants", "year": _YEAR},
+    {"template": "best_for", "subject": "stock trading apps", "audience": "beginners", "year": _YEAR},
+    {"template": "best_for", "subject": "mutual funds", "audience": "salaried professionals", "year": _YEAR},
+    {"template": "best_for", "subject": "tax filing software", "audience": "freelancers", "year": _YEAR},
+    {"template": "best_for", "subject": "NPS pension plans", "audience": "government employees", "year": _YEAR},
     # guide_for
-    {"template": "guide_for", "topic": "GST filing", "audience": "small business owners", "year": "2025"},
-    {"template": "guide_for", "topic": "income tax return", "audience": "salaried employees", "year": "2025"},
-    {"template": "guide_for", "topic": "SIP investment", "audience": "young investors", "year": "2025"},
-    {"template": "guide_for", "topic": "demat account", "audience": "first-time investors", "year": "2025"},
+    {"template": "guide_for", "topic": "GST filing", "audience": "small business owners", "year": _YEAR},
+    {"template": "guide_for", "topic": "income tax return", "audience": "salaried employees", "year": _YEAR},
+    {"template": "guide_for", "topic": "SIP investment", "audience": "young investors", "year": _YEAR},
+    {"template": "guide_for", "topic": "demat account", "audience": "first-time investors", "year": _YEAR},
     # vs_comparison
-    {"template": "vs_comparison", "item_a": "SIP", "item_b": "Lump Sum", "audience": "investors", "year": "2025"},
-    {"template": "vs_comparison", "item_a": "NSE", "item_b": "BSE", "audience": "traders", "year": "2025"},
-    {"template": "vs_comparison", "item_a": "direct mutual fund", "item_b": "regular mutual fund", "audience": "investors", "year": "2025"},
-    {"template": "vs_comparison", "item_a": "FD", "item_b": "debt mutual fund", "audience": "conservative investors", "year": "2025"},
-    {"template": "vs_comparison", "item_a": "Zerodha", "item_b": "Groww", "audience": "traders", "year": "2025"},
+    {"template": "vs_comparison", "item_a": "SIP", "item_b": "Lump Sum", "audience": "investors", "year": _YEAR},
+    {"template": "vs_comparison", "item_a": "NSE", "item_b": "BSE", "audience": "traders", "year": _YEAR},
+    {"template": "vs_comparison", "item_a": "direct mutual fund", "item_b": "regular mutual fund", "audience": "investors", "year": _YEAR},
+    {"template": "vs_comparison", "item_a": "FD", "item_b": "debt mutual fund", "audience": "conservative investors", "year": _YEAR},
+    {"template": "vs_comparison", "item_a": "Zerodha", "item_b": "Groww", "audience": "traders", "year": _YEAR},
     # how_to
-    {"template": "how_to", "action": "open a demat account", "year": "2025"},
-    {"template": "how_to", "action": "file GST return online", "year": "2025"},
-    {"template": "how_to", "action": "invest in gold ETF", "year": "2025"},
-    {"template": "how_to", "action": "calculate HRA exemption", "year": "2025"},
-    {"template": "how_to", "action": "withdraw PF online", "year": "2025"},
+    {"template": "how_to", "action": "open a demat account", "year": _YEAR},
+    {"template": "how_to", "action": "file GST return online", "year": _YEAR},
+    {"template": "how_to", "action": "invest in gold ETF", "year": _YEAR},
+    {"template": "how_to", "action": "calculate HRA exemption", "year": _YEAR},
+    {"template": "how_to", "action": "withdraw PF online", "year": _YEAR},
     # year_report
-    {"template": "year_report", "topic": "Indian stock market", "year": "2025"},
-    {"template": "year_report", "topic": "real estate", "year": "2025"},
-    {"template": "year_report", "topic": "cryptocurrency", "year": "2025"},
+    {"template": "year_report", "topic": "Indian stock market", "year": _YEAR},
+    {"template": "year_report", "topic": "real estate", "year": _YEAR},
+    {"template": "year_report", "topic": "cryptocurrency", "year": _YEAR},
 ]
 
 
@@ -151,7 +155,7 @@ def _to_slug(text: str) -> str:
 def _build_page_meta(template_type: TemplateType, params: dict) -> dict:
     """Build title, slug, meta description from template + params."""
     tmpl = TEMPLATES[template_type]
-    year = params.get("year", "2025")
+    year = params.get("year", _YEAR)
 
     def fill(pattern: str) -> str:
         result = pattern
@@ -190,7 +194,7 @@ def _generate_programmatic_content(
     - Minimum sections enforced
     - Original analysis required
     """
-    year   = params.get("year", "2025")
+    year   = params.get("year", _YEAR)
     title  = meta["title"]
 
     # Build template-specific prompt
@@ -204,7 +208,7 @@ ARTICLE TITLE: {title}
 MANDATORY STRUCTURE (use these exact H2 headings):
 1. Introduction (2-3 paras, hook with a surprising India-specific stat)
 2. How We Evaluated {params.get('subject').title()} for Indian {params.get('audience').title()}
-3. Top 5 {params.get('subject').title()} for {params.get('audience').title()} (2025 Rankings) [use H3 for each option]
+3. Top 5 {params.get('subject').title()} for {params.get('audience').title()} ({year} Rankings) [use H3 for each option]
 4. Detailed Comparison Table (HTML table with features, pricing, pros, cons)
 5. What to Look For When Choosing
 6. Frequently Asked Questions (5 FAQs with answers)
