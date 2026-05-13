@@ -1004,6 +1004,9 @@ async def wp_get_categories(_: None = Auth) -> dict:
 # SEO ENGINE ROUTES
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# In-memory store for programmatic gen errors (cleared after first poll read)
+_prog_errors: dict[str, str] = {}
+
 
 # ── SEO: Embeddings ────────────────────────────────────────────────────────────
 
@@ -1377,18 +1380,24 @@ async def seo_prog_generate(body: ProgrammaticGenerateRequest, _: None = Auth) -
             result = await asyncio.to_thread(
                 generate_programmatic_page, body.template_type, body.params, cfg
             )
-            logger.info(f"[prog_generate] done — {result.get('title')} ({result.get('word_count')} words)")
-            await sse_publisher.publish(f"prog_{slug}", {"type": "done", "slug": slug, **{k: v for k, v in result.items() if k != "html_content"}})
+            if result.get("error"):
+                # generate_programmatic_page returns {"error": "generation_failed"} on empty content
+                msg = f"Content generation returned empty — check OpenAI key and model quota"
+                logger.error(f"[prog_generate] {msg} for {slug}")
+                _prog_errors[slug] = msg
+            else:
+                logger.info(f"[prog_generate] done — {result.get('title')} ({result.get('word_count')} words)")
         except Exception as exc:
-            logger.exception(f"[prog_generate] FAILED for {slug}: {exc}")
-            await sse_publisher.publish(f"prog_{slug}", {"type": "error", "slug": slug, "message": str(exc)})
+            msg = str(exc)
+            logger.exception(f"[prog_generate] FAILED for {slug}: {msg}")
+            _prog_errors[slug] = msg
 
     task = asyncio.create_task(_do_generate())
     job_registry.register(f"prog_{slug}", task, f"prog_{slug}")
     return {"status": "started", "slug": slug}
 
 
-@app.get("/seo/programmatic/status/{slug:path}")
+@app.get("/seo/programmatic/status/{slug}")
 async def seo_prog_status(slug: str, _: None = Auth) -> dict:
     """
     Poll this after POSTing to /generate.
@@ -1397,16 +1406,25 @@ async def seo_prog_status(slug: str, _: None = Auth) -> dict:
             {"status": "error", "message": ...} on failure.
     """
     from ..seo.programmatic_seo import load_prog_store
+
+    # Check for stored error first (consumed once read)
+    if slug in _prog_errors:
+        msg = _prog_errors.pop(slug)
+        return {"status": "error", "message": msg}
+
     store = load_prog_store()
     if slug in store.get("generated", {}):
         page = store["generated"][slug]
         return {"status": "done", "slug": slug, "title": page.get("title"), "word_count": page.get("word_count")}
+
     # Check if a job is still actively running
     job = job_registry.get(f"prog_{slug}")
     if job and not job["task"].done():
         return {"status": "pending"}
-    # Not in generated and no running job — either never started or failed
-    return {"status": "unknown"}
+
+    # Task finished but nothing in generated and no error recorded
+    # This shouldn't happen, but handle it gracefully
+    return {"status": "error", "message": "Generation completed but no content was saved. Check Render logs for details."}
 
 
 @app.get("/seo/programmatic/generated")

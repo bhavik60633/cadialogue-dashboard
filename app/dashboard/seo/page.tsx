@@ -570,7 +570,7 @@ function ProgrammaticSection({
       while (Date.now() < deadline) {
         await new Promise<void>(r => setTimeout(r, 4000))
         try {
-          const statusRes = await fetch(`/api/py/seo/programmatic/status/${slug}`)
+          const statusRes = await fetch(`/api/py/seo/programmatic/status/${encodeURIComponent(slug)}`)
           if (statusRes.ok) {
             const s = await statusRes.json()
             if (s.status === "done") {
@@ -580,16 +580,22 @@ function ProgrammaticSection({
               return
             }
             if (s.status === "error") {
-              showToast(`Generation failed: ${s.message}`)
+              showToast(`❌ ${s.message}`)
               setJobs(j => ({ ...j, [key]: false }))
               return
             }
             // status === "pending" — keep polling
+          } else if (statusRes.status === 401) {
+            showToast("Session expired — please refresh the page")
+            setJobs(j => ({ ...j, [key]: false }))
+            return
           }
         } catch { /* keep polling */ }
       }
 
-      showToast("Timed out — try again or check Render logs")
+      // Reload anyway — maybe it finished but status check had a transient error
+      await loadQueue()
+      showToast("Took longer than expected — check if the page appeared in the queue")
     } catch (e) {
       showToast(`Network error: ${e}`)
     }
