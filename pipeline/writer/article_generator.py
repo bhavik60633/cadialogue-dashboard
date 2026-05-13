@@ -88,7 +88,10 @@ async def generate_draft(
 
     client = config.make_ai_client()
 
-    user_prompt = f"""Write a comprehensive finance article on the following topic.
+    primary_kw   = topic.keywords[0] if topic.keywords else topic.title
+    secondary_kws = ', '.join(topic.keywords[1:5]) if len(topic.keywords) > 1 else 'N/A'
+
+    user_prompt = f"""Write a COMPREHENSIVE, LONG-FORM finance article on the following topic.
 
 TOPIC: {topic.title}
 
@@ -97,27 +100,51 @@ RESEARCH BRIEF:
 
 {_format_market_data(market)}
 
-VERIFIED FACTS (use these numbers — they are confirmed accurate):
+VERIFIED FACTS (use these exact numbers — they are confirmed accurate):
 {_format_verified_facts(facts)}
 
-TARGET KEYWORDS (include naturally in headings and body):
-Primary: {topic.keywords[0] if topic.keywords else topic.title}
-Secondary: {', '.join(topic.keywords[1:]) if len(topic.keywords) > 1 else 'N/A'}
+TARGET KEYWORDS (weave naturally — never stuff):
+Primary (aim for 1-2% density): {primary_kw}
+Secondary (mention 2-4 times each): {secondary_kws}
 
-REQUIREMENTS:
-- Word count: {config.target_word_count_min}–{config.target_word_count_max} words
-- Include 4–6 H2 section headings
-- Include H3 sub-headings where appropriate
-- Include a 5-question FAQ section (use H2 for "Frequently Asked Questions")
-- Write for Indian retail investors as the primary audience
-- Explain global events in terms of India-specific impact
-- Include the legal disclaimer at the very end
+════════════════════════════════════════
+MANDATORY ARTICLE STRUCTURE
+════════════════════════════════════════
 
-OUTPUT FORMAT: Plain markdown with # for H1, ## for H2, ### for H3, **bold** for emphasis."""
+1. HOOK OPENING (no heading) — 2-3 sentences, most surprising India-specific fact first
+2. ## Table of Contents — markdown list linking to all H2 sections below
+3. ## [Context Heading] — background / what led here (2-3 paragraphs)
+4. ## [Core Analysis Heading] — main news with specific data points, include a comparison table or bullet list
+5. ## [India Impact Heading] — what this means for Indian retail investors specifically
+6. ## [What to Watch Heading] — 3-5 forward-looking indicators with H3 sub-items
+7. ## Expert Insight — one expert-voice paragraph (attributed to a type of analyst, not fabricated names)
+8. ## Frequently Asked Questions — EXACTLY 5 questions as H3, each with a 2-4 sentence answer
+9. ## Key Takeaways — bullet list of 5-7 actionable points for Indian investors
+10. Disclaimer paragraph (verbatim from your system prompt)
+
+════════════════════════════════════════
+CONTENT REQUIREMENTS
+════════════════════════════════════════
+- MINIMUM 2500 words — aim for 3000-3500 words
+- Use ₹ for Indian currency, $ for USD throughout
+- Include AT LEAST ONE HTML-style comparison table (markdown table syntax)
+- Include AT LEAST ONE bullet list with 5+ items
+- Every statistic must be specific (write 74,892 not "around 75,000")
+- Include India-specific regulatory context (RBI, SEBI, NSE, BSE, ICAI as relevant)
+- Active voice, present tense for live data
+- Varied sentence rhythm — mix short punchy with longer analytical
+- ZERO filler phrases: no "In today's fast-paced world", "It is important to note",
+  "In conclusion", "Navigating the landscape", "Delving into"
+- Each H2 section ends with a clear takeaway sentence
+- FAQ questions must be what retail investors ACTUALLY search on Google
+
+OUTPUT FORMAT: Plain markdown with ## for H2, ### for H3, **bold** for emphasis.
+Do NOT include # H1 (the title is set separately).
+The article body starts directly after the hook — no "Introduction" label."""
 
     response = client.chat.completions.create(
         model=config.ai_model,
-        max_tokens=5000,
+        max_tokens=7000,          # increased: 3500 words ≈ ~5000 tokens output
         messages=[
             {"role": "system", "content": JOURNALIST_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},

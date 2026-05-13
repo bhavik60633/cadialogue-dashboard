@@ -186,7 +186,67 @@ async def publish_post(
     resp.raise_for_status()
     post = resp.json()
     logger.info(f"Published post ID={post['id']} URL={post['link']}")
+
+    # ── Auto-trigger SEO post-publish pipeline ────────────────────────────────
+    # 1. Embed the new article for future internal linking
+    # 2. Run internal linking (30+ outgoing links + backlinks from existing articles)
+    # 3. Notify search engines (Google Indexing API + IndexNow)
+    _run_seo_post_publish(post, config)
+
     return post
+
+
+def _run_seo_post_publish(post: dict, config: Config) -> None:
+    """
+    Fire-and-forget SEO actions after a post is published.
+    Errors are logged but never raised (must not break the publish flow).
+
+    Actions:
+      1. Upsert article embedding (enables future similarity search)
+      2. Run internal linking engine (30+ links in + backlinks out)
+      3. Submit URL to Google Indexing API + IndexNow
+    """
+    import threading
+
+    def _bg():
+        try:
+            # 1. Embed article
+            from ..seo.embeddings_store import upsert_article_embedding
+            upsert_article_embedding(post, config)
+            logger.info(f"[SEO] Embedded post {post['id']}")
+        except Exception as exc:
+            logger.warning(f"[SEO] Embedding failed for post {post['id']}: {exc}")
+
+        try:
+            # 2. Internal linking
+            from ..seo.internal_linker import link_article
+            from .wp_manager import get_post as _get_post, update_post as _update_post
+
+            html = post.get("content", {}).get("rendered", "")
+            link_article(
+                new_post_id=post["id"],
+                new_post_html=html,
+                new_post_title=post.get("title", {}).get("rendered", ""),
+                new_post_url=post.get("link", ""),
+                config=config,
+                update_post_fn=lambda pid, content: _update_post(config, pid, {"content": content}),
+                get_post_fn=lambda pid: _get_post(config, pid),
+            )
+            logger.info(f"[SEO] Internal linking complete for post {post['id']}")
+        except Exception as exc:
+            logger.warning(f"[SEO] Internal linking failed for post {post['id']}: {exc}")
+
+        try:
+            # 3. Notify search engines
+            from ..seo.sitemap_manager import notify_search_engines
+            notify_search_engines(post.get("link", ""), config)
+            logger.info(f"[SEO] Indexed URL: {post.get('link', '')}")
+        except Exception as exc:
+            logger.warning(f"[SEO] Index notification failed: {exc}")
+
+    # Run in background thread — doesn't block the API response
+    t = threading.Thread(target=_bg, daemon=True)
+    t.start()
 
 
 def upload_local_image(file_path: Path, alt_text: str, title: str, config: Config) -> tuple[int, str]:

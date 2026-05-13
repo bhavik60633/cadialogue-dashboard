@@ -8,6 +8,7 @@ const NAV_LINKS = [
   { href: "/dashboard", label: "Run History", exact: true },
   { href: "/dashboard/topics", label: "Topic Library" },
   { href: "/dashboard/posts", label: "Posts" },
+  { href: "/dashboard/seo", label: "SEO" },
 ]
 
 export function DashboardNav() {

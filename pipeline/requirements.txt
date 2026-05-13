@@ -51,3 +51,9 @@ bcrypt>=4.1.0
 
 # ── File locking ──────────────────────────────────────────────────────────
 filelock>=3.13.0
+# ── SEO Engine (no new installs — all deps already above) ─────────────────────
+# text-embedding-3-small   → openai>=1.40.0  (already listed)
+# Google Autocomplete API  → requests>=2.31.0 (already listed)
+# DuckDuckGo Instant API   → requests>=2.31.0 (already listed)
+# Cosine similarity        → pure Python math (no numpy needed)
+# Sitemap pings            → requests>=2.31.0 (already listed)

@@ -11,6 +11,7 @@ Start with:
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 
 # Load .env from project root so env vars are available when uvicorn starts directly
@@ -584,6 +585,16 @@ async def publish_with_images_route(
             )
             run_tracker.update_run(run_id, topic_status="published", wp_post_url=post.get("link", ""))
             await sse_publisher.publish(run_id, {"type": "published", "url": post.get("link", "")})
+
+            # ── SEO pipeline on final content (images embedded) ──────────────
+            # Re-run AFTER images are embedded so the linker sees the full HTML.
+            # _run_seo_post_publish is fire-and-forget (background thread).
+            try:
+                from ..publisher.wordpress_client import _run_seo_post_publish
+                _run_seo_post_publish(post, cfg)
+            except Exception as seo_exc:
+                logger.warning(f"SEO post-publish hook failed for run {run_id}: {seo_exc}")
+
         except Exception as exc:
             tb = traceback.format_exc()
             run_tracker.update_run(run_id, topic_status="failed", error=str(exc))
@@ -751,18 +762,32 @@ async def wp_get_post(post_id: int, _: None = Auth) -> dict:
 
 @app.post("/wp/posts")
 async def wp_create_post(body: WpPostData, _: None = Auth) -> dict:
-    """Create a new WordPress post."""
+    """
+    Create a new WordPress post from the dashboard Posts section.
+    After publish, automatically triggers the full SEO pipeline:
+      - Embeds article for semantic search
+      - Injects 30+ internal links
+      - Submits URL to Google + IndexNow
+    """
     import asyncio
     from ..config import load_config
     from ..publisher.wp_manager import create_post
 
-    cfg = load_config()
+    cfg  = load_config()
     data = body.model_dump(exclude_none=True)
     if not data.get("title"):
         raise HTTPException(400, "title is required")
     if not data.get("content"):
         raise HTTPException(400, "content is required")
-    return await asyncio.to_thread(create_post, cfg, data)
+
+    post = await asyncio.to_thread(create_post, cfg, data)
+
+    # ── Auto SEO: only fire for published posts, not drafts ──────────────────
+    if post.get("status") == "publish":
+        from ..publisher.wordpress_client import _run_seo_post_publish
+        _run_seo_post_publish(post, cfg)   # runs in background thread
+
+    return post
 
 
 @app.put("/wp/posts/{post_id}")
@@ -973,6 +998,454 @@ async def wp_get_categories(_: None = Auth) -> dict:
     cfg = load_config()
     cats = await asyncio.to_thread(get_categories, cfg)
     return {"categories": cats}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SEO ENGINE ROUTES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+# ── SEO: Embeddings ────────────────────────────────────────────────────────────
+
+@app.post("/seo/embeddings/rebuild")
+async def seo_rebuild_embeddings(background_tasks: BackgroundTasks, _: None = Auth) -> dict:
+    """
+    Rebuild OpenAI embeddings for ALL published WordPress posts.
+    This is the foundation for internal linking + topic clustering.
+    Run once after initial setup, then automatically on each publish.
+    Time: ~30-60s for 50 posts.
+    """
+    async def _do_rebuild():
+        import asyncio
+        from ..config import load_config
+        from ..publisher.wp_manager import list_posts
+        from ..seo.embeddings_store import rebuild_all_embeddings
+
+        cfg    = load_config()
+        posts, total, _ = await asyncio.to_thread(list_posts, cfg, 1, 100, "publish")
+        count  = rebuild_all_embeddings(cfg, posts)
+        await sse_publisher.publish("seo_rebuild", {"type": "done", "count": count})
+
+    task = asyncio.create_task(_do_rebuild())
+    job_registry.register("seo_embed_rebuild", task, "seo_embed_rebuild")
+    return {"status": "started", "message": "Rebuilding embeddings in background"}
+
+
+@app.get("/seo/embeddings/status")
+async def seo_embedding_status(_: None = Auth) -> dict:
+    """Return count of embedded articles and last update time."""
+    from ..seo.embeddings_store import load_embeddings
+    data = load_embeddings()
+    if not data:
+        return {"count": 0, "last_updated": None}
+    last = max(v.get("updated_at", 0) for v in data.values())
+    return {"count": len(data), "last_updated": last}
+
+
+# ── SEO: Internal Linking ──────────────────────────────────────────────────────
+
+class LinkArticleRequest(BaseModel):
+    post_id: int
+    post_title: str
+    post_url: str
+    post_html: str = ""   # optional: if empty, fetched from WP
+
+
+@app.post("/seo/link/article")
+async def seo_link_article(body: LinkArticleRequest, _: None = Auth) -> dict:
+    """
+    Run the full internal linking pass for a single article:
+      - Inject 30+ outgoing links into the article
+      - Update 5-8 existing articles to link back
+      - Return stats (outgoing_count, backlinks_added)
+    """
+    import asyncio
+    from ..config import load_config
+    from ..publisher.wp_manager import get_post, update_post
+    from ..seo.internal_linker import link_article
+
+    cfg = load_config()
+
+    # Fetch HTML if not provided
+    html = body.post_html
+    if not html:
+        post = await asyncio.to_thread(get_post, cfg, body.post_id)
+        html = post.get("content", {}).get("rendered", "")
+
+    def _update(pid: int, content: str):
+        asyncio.get_event_loop().run_until_complete(
+            asyncio.to_thread(update_post, cfg, pid, {"content": content})
+        )
+
+    def _get_post(pid: int) -> dict:
+        import asyncio as aio
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(get_post, cfg, pid).result()
+
+    stats = link_article(
+        new_post_id=body.post_id,
+        new_post_html=html,
+        new_post_title=body.post_title,
+        new_post_url=body.post_url,
+        config=cfg,
+        update_post_fn=lambda pid, content: update_post(cfg, pid, {"content": content}),
+        get_post_fn=lambda pid: get_post(cfg, pid),
+    )
+    return stats
+
+
+@app.get("/seo/link/stats")
+async def seo_link_stats(_: None = Auth) -> dict:
+    """Return link graph stats: total links, orphan pages, averages."""
+    from ..seo.internal_linker import get_link_stats
+    return get_link_stats()
+
+
+@app.get("/seo/link/orphans")
+async def seo_orphan_pages(_: None = Auth) -> dict:
+    """
+    Return list of published posts with zero incoming internal links.
+    These are 'orphan pages' — invisible to Google's link graph.
+    """
+    import asyncio
+    from ..config import load_config
+    from ..publisher.wp_manager import list_posts
+    from ..seo.internal_linker import find_orphan_posts
+
+    cfg         = load_config()
+    posts, _, _ = await asyncio.to_thread(list_posts, cfg, 1, 100, "publish")
+    post_ids    = [p["id"] for p in posts]
+    orphan_ids  = find_orphan_posts(post_ids)
+
+    # Enrich with titles
+    id_to_title = {p["id"]: p.get("title", {}).get("rendered", "") for p in posts}
+    orphans = [{"post_id": pid, "title": id_to_title.get(pid, "")} for pid in orphan_ids]
+    return {"orphans": orphans, "count": len(orphans)}
+
+
+# ── SEO: Keyword Engine ────────────────────────────────────────────────────────
+
+class KeywordDiscoveryRequest(BaseModel):
+    extra_seeds: list[str] = []
+
+
+@app.post("/seo/keywords/discover")
+async def seo_discover_keywords(
+    body: KeywordDiscoveryRequest,
+    background_tasks: BackgroundTasks,
+    _: None = Auth,
+) -> dict:
+    """
+    Run full keyword discovery + clustering pipeline.
+    Expands seeds via Google Autocomplete + DDG, clusters by embedding similarity.
+    Runs in background (~2-3 min for full discovery).
+    """
+    async def _do_discover():
+        from ..config import load_config
+        from ..seo.keyword_engine import run_keyword_discovery
+        cfg    = load_config()
+        result = run_keyword_discovery(cfg, body.extra_seeds or [])
+        await sse_publisher.publish("seo_kw", {"type": "done", **result})
+
+    task = asyncio.create_task(_do_discover())
+    job_registry.register("seo_kw_discover", task, "seo_kw_discover")
+    return {"status": "started"}
+
+
+@app.get("/seo/keywords/clusters")
+async def seo_keyword_clusters(_: None = Auth) -> dict:
+    """Return all keyword clusters from the database."""
+    from ..seo.keyword_engine import load_kw_store
+    store = load_kw_store()
+    # Truncate embeddings before sending (too large)
+    clusters = []
+    for c in store.get("clusters", []):
+        clusters.append({k: v for k, v in c.items() if k != "embedding"})
+    return {
+        "clusters": clusters,
+        "total_keywords": sum(len(c.get("keywords", [])) for c in clusters),
+        "last_discovery": store.get("last_discovery", 0),
+    }
+
+
+@app.get("/seo/keywords/easy-wins")
+async def seo_easy_win_keywords(max_difficulty: int = 40, top_n: int = 20, _: None = Auth) -> dict:
+    """
+    Return top easy-win keywords: low competition, informational intent.
+    Use these to plan your next batch of articles.
+    """
+    from ..seo.keyword_engine import get_easy_win_keywords
+    return {"keywords": get_easy_win_keywords(max_difficulty, top_n)}
+
+
+# ── SEO: Topic Authority ───────────────────────────────────────────────────────
+
+@app.post("/seo/topics/rebuild")
+async def seo_rebuild_topics(background_tasks: BackgroundTasks, _: None = Auth) -> dict:
+    """
+    Rebuild the full topical authority map from all published posts.
+    Assigns each article to a pillar, generates content roadmaps for gaps.
+    Slow (~2-3 min) — run once daily or on demand.
+    """
+    async def _do_rebuild():
+        import asyncio
+        from ..config import load_config
+        from ..publisher.wp_manager import list_posts
+        from ..seo.topic_authority import rebuild_topic_map
+        cfg    = load_config()
+        posts, _, _ = await asyncio.to_thread(list_posts, cfg, 1, 100, "publish")
+        result = rebuild_topic_map(cfg, posts)
+        await sse_publisher.publish("seo_topics", {
+            "type": "done",
+            "authority_score": result.get("authority_score"),
+            "pillars": len(result.get("pillars", [])),
+        })
+
+    task = asyncio.create_task(_do_rebuild())
+    job_registry.register("seo_topic_rebuild", task, "seo_topic_rebuild")
+    return {"status": "started"}
+
+
+@app.get("/seo/topics/map")
+async def seo_topic_map(_: None = Auth) -> dict:
+    """Return the current topic authority map."""
+    from ..seo.topic_authority import load_topic_map
+    return load_topic_map()
+
+
+@app.get("/seo/topics/coverage")
+async def seo_coverage_report(_: None = Auth) -> dict:
+    """Return a concise topical coverage summary for the SEO dashboard."""
+    from ..seo.topic_authority import get_coverage_report
+    return get_coverage_report()
+
+
+@app.get("/seo/topics/roadmap")
+async def seo_roadmap(priority: str = "any", top_n: int = 20, _: None = Auth) -> dict:
+    """
+    Return the top content roadmap items — articles to write next.
+    Sorted by priority: high → medium → low.
+    Use these to fill topical authority gaps.
+    """
+    from ..seo.topic_authority import get_top_roadmap_items
+    items = get_top_roadmap_items(priority, top_n)
+    return {"items": items, "count": len(items)}
+
+
+# ── SEO: Scoring ──────────────────────────────────────────────────────────────
+
+@app.get("/seo/scores")
+async def seo_all_scores(_: None = Auth) -> dict:
+    """Return SEO scores for all published posts (from cache)."""
+    from ..seo.seo_scorer import load_scores
+    scores = load_scores()
+    items  = list(scores.values())
+    items.sort(key=lambda x: x.get("total_score", 0), reverse=True)
+    avg = round(sum(i.get("total_score", 0) for i in items) / max(len(items), 1), 1)
+    return {"scores": items, "average": avg, "count": len(items)}
+
+
+@app.post("/seo/scores/rebuild")
+async def seo_rebuild_scores(background_tasks: BackgroundTasks, _: None = Auth) -> dict:
+    """Re-score all published posts. Runs in background."""
+    async def _do_score():
+        import asyncio
+        from ..config import load_config
+        from ..publisher.wp_manager import list_posts
+        from ..seo.seo_scorer import score_all_articles
+        cfg    = load_config()
+        posts, _, _ = await asyncio.to_thread(list_posts, cfg, 1, 100, "publish")
+        result = score_all_articles(posts)
+        await sse_publisher.publish("seo_scores", {"type": "done", **result})
+
+    task = asyncio.create_task(_do_score())
+    job_registry.register("seo_score_rebuild", task, "seo_score_rebuild")
+    return {"status": "started"}
+
+
+@app.get("/seo/scores/{post_id}")
+async def seo_score_post(post_id: int, _: None = Auth) -> dict:
+    """Get or compute the SEO score for a single post."""
+    import asyncio
+    from ..config import load_config
+    from ..publisher.wp_manager import get_post
+    from ..seo.seo_scorer import load_scores, score_article
+
+    scores = load_scores()
+    cached = scores.get(str(post_id))
+    # Return cached if less than 1 hour old
+    if cached and (time.time() - cached.get("scored_at", 0)) < 3600:
+        return cached
+
+    cfg  = load_config()
+    post = await asyncio.to_thread(get_post, cfg, post_id)
+    return score_article(post)
+
+
+# ── SEO: Content Freshness ─────────────────────────────────────────────────────
+
+@app.post("/seo/freshness/scan")
+async def seo_freshness_scan(background_tasks: BackgroundTasks, _: None = Auth) -> dict:
+    """Scan all posts for stale content and return a freshness report."""
+    import asyncio
+    from ..config import load_config
+    from ..publisher.wp_manager import list_posts
+    from ..seo.content_freshness import scan_stale_articles
+
+    cfg    = load_config()
+    posts, _, _ = await asyncio.to_thread(list_posts, cfg, 1, 100, "publish")
+    result = scan_stale_articles(posts)
+    return result
+
+
+@app.get("/seo/freshness/report")
+async def seo_freshness_report(_: None = Auth) -> dict:
+    """Return cached freshness stats for the SEO dashboard."""
+    from ..seo.content_freshness import get_freshness_report
+    return get_freshness_report()
+
+
+@app.get("/seo/freshness/{post_id}/suggest-updates")
+async def seo_suggest_updates(post_id: int, _: None = Auth) -> dict:
+    """
+    Use GPT-4o to analyse a stale article and suggest specific update actions.
+    Returns a structured update plan with outdated sections, new data needed, etc.
+    """
+    import asyncio
+    from ..config import load_config
+    from ..publisher.wp_manager import get_post
+    from ..seo.content_freshness import suggest_updates_for_article
+
+    cfg  = load_config()
+    post = await asyncio.to_thread(get_post, cfg, post_id)
+    return suggest_updates_for_article(post, cfg)
+
+
+# ── SEO: Programmatic SEO ──────────────────────────────────────────────────────
+
+@app.get("/seo/programmatic/queue")
+async def seo_prog_queue(_: None = Auth) -> dict:
+    """Return list of pre-defined programmatic pages not yet generated."""
+    from ..seo.programmatic_seo import get_generation_queue
+    return {"queue": get_generation_queue()}
+
+
+class ProgrammaticGenerateRequest(BaseModel):
+    template_type: str   # "best_for" | "guide_for" | "vs_comparison" | "how_to" | "year_report"
+    params: dict         # template-specific params
+
+
+@app.post("/seo/programmatic/generate")
+async def seo_prog_generate(body: ProgrammaticGenerateRequest, _: None = Auth) -> dict:
+    """
+    Generate one programmatic SEO page using the specified template + params.
+    Returns the page content ready to review and publish.
+    """
+    import asyncio
+    from ..config import load_config
+    from ..seo.programmatic_seo import generate_programmatic_page
+
+    cfg    = load_config()
+    result = await asyncio.to_thread(
+        generate_programmatic_page, body.template_type, body.params, cfg
+    )
+    return result
+
+
+@app.get("/seo/programmatic/generated")
+async def seo_prog_generated(_: None = Auth) -> dict:
+    """List all already-generated programmatic pages."""
+    from ..seo.programmatic_seo import load_prog_store
+    store  = load_prog_store()
+    pages  = list(store.get("generated", {}).values())
+    # Strip html_content to keep response small
+    slim   = [{k: v for k, v in p.items() if k != "html_content"} for p in pages]
+    return {"pages": slim, "count": len(slim)}
+
+
+# ── SEO: Sitemap & Indexing ────────────────────────────────────────────────────
+
+class IndexSubmitRequest(BaseModel):
+    url: str
+
+
+@app.post("/seo/index/submit")
+async def seo_index_submit(body: IndexSubmitRequest, _: None = Auth) -> dict:
+    """Submit a single URL to Google Indexing API + IndexNow."""
+    import asyncio
+    from ..config import load_config
+    from ..seo.sitemap_manager import notify_search_engines
+
+    cfg = load_config()
+    return await asyncio.to_thread(notify_search_engines, body.url, cfg)
+
+
+@app.post("/seo/index/batch-submit")
+async def seo_batch_submit(background_tasks: BackgroundTasks, _: None = Auth) -> dict:
+    """Batch-submit all posts not indexed in the past 30 days."""
+    async def _do_submit():
+        import asyncio
+        from ..config import load_config
+        from ..publisher.wp_manager import list_posts
+        from ..seo.sitemap_manager import batch_submit_unindexed, ping_sitemap
+
+        cfg    = load_config()
+        posts, _, _ = await asyncio.to_thread(list_posts, cfg, 1, 100, "publish")
+        urls   = [p.get("link", "") for p in posts if p.get("link")]
+        result = await asyncio.to_thread(batch_submit_unindexed, urls, cfg)
+        await asyncio.to_thread(ping_sitemap, cfg)
+        await sse_publisher.publish("seo_index", {"type": "done", **result})
+
+    task = asyncio.create_task(_do_submit())
+    job_registry.register("seo_batch_index", task, "seo_batch_index")
+    return {"status": "started"}
+
+
+# ── SEO: Master Dashboard Stats ────────────────────────────────────────────────
+
+@app.get("/seo/dashboard")
+async def seo_dashboard(_: None = Auth) -> dict:
+    """
+    One-call endpoint that returns everything needed for the SEO dashboard:
+    - Embedding count
+    - Link graph stats
+    - Coverage report
+    - Freshness report
+    - Score averages
+    - Top easy-win keywords
+    - Top roadmap items
+    """
+    import asyncio
+    from ..seo.embeddings_store import load_embeddings
+    from ..seo.internal_linker import get_link_stats
+    from ..seo.topic_authority import get_coverage_report
+    from ..seo.content_freshness import get_freshness_report
+    from ..seo.seo_scorer import load_scores
+    from ..seo.keyword_engine import get_easy_win_keywords
+    from ..seo.topic_authority import get_top_roadmap_items
+
+    embeddings = load_embeddings()
+    scores     = load_scores()
+    score_vals = [v.get("total_score", 0) for v in scores.values()]
+    avg_score  = round(sum(score_vals) / max(len(score_vals), 1), 1)
+
+    return {
+        "embeddings": {
+            "count": len(embeddings),
+            "last_updated": max((v.get("updated_at", 0) for v in embeddings.values()), default=0),
+        },
+        "linking":    get_link_stats(),
+        "coverage":   get_coverage_report(),
+        "freshness":  get_freshness_report(),
+        "scoring": {
+            "articles_scored": len(scores),
+            "average_score":   avg_score,
+            "needs_update":    sum(1 for s in score_vals if s < 60),
+        },
+        "keywords":   {"easy_wins": get_easy_win_keywords(40, 5)},
+        "roadmap":    {"top_items": get_top_roadmap_items("high", 5)},
+    }
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
