@@ -197,18 +197,27 @@ def _generate_programmatic_content(
     year   = params.get("year", _YEAR)
     title  = meta["title"]
 
-    # Build template-specific prompt
-    prompts = {
-        "best_for": f"""You are a senior finance journalist at cadialogue.in, India's leading finance news portal.
+    # Build prompt for the specific template only — do NOT use a dict of f-strings
+    # because all f-strings in a dict literal are evaluated immediately, causing
+    # AttributeError when a template-specific key (e.g. 'subject') is missing.
+    subject  = params.get("subject", "")
+    audience = params.get("audience", "")
+    topic    = params.get("topic", "")
+    item_a   = params.get("item_a", "")
+    item_b   = params.get("item_b", "")
+    action   = params.get("action", "")
 
-Write a comprehensive "Best {params.get('subject')} for {params.get('audience')} in India {year}" article.
+    if template_type == "best_for":
+        prompt = f"""You are a senior finance journalist at cadialogue.in, India's leading finance news portal.
+
+Write a comprehensive "Best {subject} for {audience} in India {year}" article.
 
 ARTICLE TITLE: {title}
 
 MANDATORY STRUCTURE (use these exact H2 headings):
 1. Introduction (2-3 paras, hook with a surprising India-specific stat)
-2. How We Evaluated {params.get('subject').title()} for Indian {params.get('audience').title()}
-3. Top 5 {params.get('subject').title()} for {params.get('audience').title()} ({year} Rankings) [use H3 for each option]
+2. How We Evaluated {subject.title()} for Indian {audience.title()}
+3. Top 5 {subject.title()} for {audience.title()} ({year} Rankings) [use H3 for each option]
 4. Detailed Comparison Table (HTML table with features, pricing, pros, cons)
 5. What to Look For When Choosing
 6. Frequently Asked Questions (5 FAQs with answers)
@@ -225,21 +234,22 @@ REQUIREMENTS:
 - Journalistic, authoritative tone
 
 Write the complete HTML content (using <h2>, <h3>, <p>, <ul>, <li>, <table>, <strong> tags).
-Do NOT include <html>, <body>, <head> tags — just the body content.""",
+Do NOT include <html>, <body>, <head> tags — just the body content."""
 
-        "vs_comparison": f"""You are a senior finance journalist at cadialogue.in.
+    elif template_type == "vs_comparison":
+        prompt = f"""You are a senior finance journalist at cadialogue.in.
 
-Write a comprehensive comparison: "{params.get('item_a')} vs {params.get('item_b')} for Indian {params.get('audience')}"
+Write a comprehensive comparison: "{item_a} vs {item_b} for Indian {audience}"
 
 ARTICLE TITLE: {title}
 
 MANDATORY STRUCTURE:
-1. Introduction — what's the debate and why it matters for Indian {params.get('audience').title()}
-2. What is {params.get('item_a')}? (definition, how it works in India)
-3. What is {params.get('item_b')}? (definition, how it works in India)
+1. Introduction — what's the debate and why it matters for Indian {audience.title()}
+2. What is {item_a}? (definition, how it works in India)
+3. What is {item_b}? (definition, how it works in India)
 4. Head-to-Head Comparison Table (HTML table: returns, risk, liquidity, tax, min investment, etc.)
-5. When to Choose {params.get('item_a')} (specific scenarios)
-6. When to Choose {params.get('item_b')} (specific scenarios)
+5. When to Choose {item_a} (specific scenarios)
+6. When to Choose {item_b} (specific scenarios)
 7. Tax Implications in India (important!)
 8. Our Verdict for {year}
 9. FAQ (5 questions)
@@ -253,39 +263,12 @@ REQUIREMENTS:
 - Balanced — don't favour one option without justification
 - No generic AI fluff
 
-Write the complete HTML content.""",
+Write the complete HTML content."""
 
-        "guide_for": f"""You are a senior finance journalist at cadialogue.in.
+    elif template_type == "how_to":
+        prompt = f"""You are a senior finance journalist at cadialogue.in.
 
-Write "The Complete {params.get('topic').title()} Guide for {params.get('audience').title()} in India {year}"
-
-ARTICLE TITLE: {title}
-
-MANDATORY STRUCTURE:
-1. Introduction (what, why, who it's for)
-2. Table of Contents (HTML anchor links)
-3. Step-by-Step Process (numbered H3 steps)
-4. Key Rules & Requirements in India ({year})
-5. Common Mistakes to Avoid
-6. Expert Tips for {params.get('audience').title()}
-7. Useful Resources & Tools
-8. FAQ (5 questions)
-9. Summary
-10. Disclaimer
-
-REQUIREMENTS:
-- Minimum 1500 words
-- Specific to Indian {params.get('audience').title()} — mention their specific challenges
-- Include exact deadlines, fees, penalties where applicable
-- Step numbers and clear action items
-- India-specific regulatory context (SEBI/RBI/Income Tax Act)
-- Current for {year}
-
-Write the complete HTML content.""",
-
-        "how_to": f"""You are a senior finance journalist at cadialogue.in.
-
-Write "How to {params.get('action')} in India: Complete Step-by-Step Guide {year}"
+Write "How to {action} in India: Complete Step-by-Step Guide {year}"
 
 ARTICLE TITLE: {title}
 
@@ -308,11 +291,12 @@ REQUIREMENTS:
 - Include processing time and costs in ₹
 - {year} current information
 
-Write the complete HTML content.""",
+Write the complete HTML content."""
 
-        "year_report": f"""You are a senior market analyst at cadialogue.in.
+    elif template_type == "year_report":
+        prompt = f"""You are a senior market analyst at cadialogue.in.
 
-Write "{year} {params.get('topic').title()} Outlook for India: Key Trends & Analysis"
+Write "{year} {topic.title()} Outlook for India: Key Trends & Analysis"
 
 ARTICLE TITLE: {title}
 
@@ -336,10 +320,36 @@ REQUIREMENTS:
 - Include one comprehensive HTML data table
 - Authoritative but accessible language
 
-Write the complete HTML content.""",
-    }
+Write the complete HTML content."""
 
-    prompt = prompts.get(template_type, prompts["guide_for"])
+    else:  # guide_for (default)
+        prompt = f"""You are a senior finance journalist at cadialogue.in.
+
+Write "The Complete {topic.title()} Guide for {audience.title()} in India {year}"
+
+ARTICLE TITLE: {title}
+
+MANDATORY STRUCTURE:
+1. Introduction (what, why, who it's for)
+2. Table of Contents (HTML anchor links)
+3. Step-by-Step Process (numbered H3 steps)
+4. Key Rules & Requirements in India ({year})
+5. Common Mistakes to Avoid
+6. Expert Tips for {audience.title()}
+7. Useful Resources & Tools
+8. FAQ (5 questions)
+9. Summary
+10. Disclaimer
+
+REQUIREMENTS:
+- Minimum 1500 words
+- Specific to Indian {audience.title()} — mention their specific challenges
+- Include exact deadlines, fees, penalties where applicable
+- Step numbers and clear action items
+- India-specific regulatory context (SEBI/RBI/Income Tax Act)
+- Current for {year}
+
+Write the complete HTML content."""
 
     try:
         client = config.make_ai_client()
