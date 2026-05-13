@@ -96,15 +96,37 @@ def save_topic_map(data: dict) -> None:
 
 # ── Pillar assignment ─────────────────────────────────────────────────────────
 
+def _build_pillar_embeddings_cache(
+    pillar_names: list[str],
+    config: Config,
+) -> dict[str, list[float]]:
+    """
+    Pre-compute embeddings for all pillar names once.
+    Returns {pillar_name: embedding_vector}.
+    This prevents 14 API calls per article — instead we call embed_text
+    once per pillar (total 14 calls) and reuse for every article.
+    """
+    cache: dict[str, list[float]] = {}
+    for pillar in pillar_names:
+        try:
+            cache[pillar] = embed_text(pillar, config)
+        except Exception as exc:
+            logger.warning(f"Failed to embed pillar '{pillar}': {exc}")
+    return cache
+
+
 def _assign_article_to_pillar(
     post_title: str,
     post_excerpt: str,
     pillar_names: list[str],
     config: Config,
+    pillar_cache: dict[str, list[float]] | None = None,
 ) -> tuple[str, float]:
     """
     Assign an article to the best-matching pillar using embedding cosine similarity.
     Returns (pillar_name, confidence_score).
+
+    Pass pre-built pillar_cache to avoid re-embedding pillars for every article.
     """
     if not config.has_openai:
         # Fallback: keyword matching
@@ -117,13 +139,16 @@ def _assign_article_to_pillar(
     # Embed the article
     article_vec = embed_text(f"{post_title}. {post_excerpt[:300]}", config)
 
-    # Embed each pillar name and find best match
+    # Use cached pillar embeddings (or embed on-the-fly if cache not provided)
     best_pillar = pillar_names[0]
     best_score  = -1.0
 
     from .embeddings_store import _cosine_similarity
     for pillar in pillar_names:
-        p_vec = embed_text(pillar, config)
+        if pillar_cache and pillar in pillar_cache:
+            p_vec = pillar_cache[pillar]
+        else:
+            p_vec = embed_text(pillar, config)
         score = _cosine_similarity(article_vec, p_vec)
         if score > best_score:
             best_score  = score
@@ -230,6 +255,13 @@ def rebuild_topic_map(config: Config, all_posts: list[dict]) -> dict:
     existing_map   = load_topic_map()
     pillar_buckets : dict[str, list[dict]] = {p: [] for p in CADIALOGUE_PILLARS}
 
+    # Pre-compute all pillar embeddings ONCE (14 API calls total, not 14×N)
+    pillar_cache: dict[str, list[float]] = {}
+    if config.has_openai:
+        logger.info("Pre-computing pillar embeddings (14 vectors, done once)…")
+        pillar_cache = _build_pillar_embeddings_cache(CADIALOGUE_PILLARS, config)
+        logger.info(f"Pillar cache ready: {len(pillar_cache)}/{len(CADIALOGUE_PILLARS)} pillars embedded")
+
     for post in all_posts:
         title   = post.get("title", {}).get("rendered", "")
         excerpt = post.get("excerpt", {}).get("rendered", "")
@@ -240,7 +272,8 @@ def rebuild_topic_map(config: Config, all_posts: list[dict]) -> dict:
 
         try:
             pillar, score = _assign_article_to_pillar(
-                title, excerpt, CADIALOGUE_PILLARS, config
+                title, excerpt, CADIALOGUE_PILLARS, config,
+                pillar_cache=pillar_cache,
             )
             pillar_buckets[pillar].append({
                 "post_id": post.get("id"),

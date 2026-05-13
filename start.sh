@@ -42,12 +42,21 @@ if [ -d /data ]; then
   fi
   ln -sfn /data/state/images pipeline/state/images 2>&1 || true
 
+  # SEO state dir — embeddings, link graph, keyword clusters, scores, etc.
+  mkdir -p /data/state/seo || true
+  if [ -e pipeline/state/seo ] && [ ! -L pipeline/state/seo ]; then
+    cp -rn pipeline/state/seo/. /data/state/seo/ 2>&1 || true
+    rm -rf pipeline/state/seo 2>&1 || true
+  fi
+  ln -sfn /data/state/seo pipeline/state/seo 2>&1 || true
+
   # Ensure default admin user exists
   echo "[start.sh] Ensuring default admin user exists..."
   python -m pipeline.scripts.add_user bhavikvaid65@gmail.com --password=Cadialogue@2026 --name="Bhavik Vaid" --role=admin || true
 else
   echo "[start.sh] No persistent disk — using ephemeral pipeline/state/"
   mkdir -p pipeline/state/images || true
+  mkdir -p pipeline/state/seo || true
   # Ensure default admin user exists locally as well
   python -m pipeline.scripts.add_user bhavikvaid65@gmail.com --password=Cadialogue@2026 --name="Bhavik Vaid" --role=admin || true
 fi

@@ -1011,19 +1011,17 @@ async def wp_get_categories(_: None = Auth) -> dict:
 async def seo_rebuild_embeddings(background_tasks: BackgroundTasks, _: None = Auth) -> dict:
     """
     Rebuild OpenAI embeddings for ALL published WordPress posts.
-    This is the foundation for internal linking + topic clustering.
-    Run once after initial setup, then automatically on each publish.
-    Time: ~30-60s for 50 posts.
+    Runs in a THREAD POOL so the event loop is never blocked.
     """
     async def _do_rebuild():
-        import asyncio
         from ..config import load_config
         from ..publisher.wp_manager import list_posts
         from ..seo.embeddings_store import rebuild_all_embeddings
 
-        cfg    = load_config()
+        cfg             = load_config()
+        # Both WP fetch and embedding loop run in thread pool (blocking I/O)
         posts, total, _ = await asyncio.to_thread(list_posts, cfg, 1, 100, "publish")
-        count  = rebuild_all_embeddings(cfg, posts)
+        count           = await asyncio.to_thread(rebuild_all_embeddings, cfg, posts)
         await sse_publisher.publish("seo_rebuild", {"type": "done", "count": count})
 
     task = asyncio.create_task(_do_rebuild())
@@ -1145,7 +1143,8 @@ async def seo_discover_keywords(
         from ..config import load_config
         from ..seo.keyword_engine import run_keyword_discovery
         cfg    = load_config()
-        result = run_keyword_discovery(cfg, body.extra_seeds or [])
+        # run_keyword_discovery does many HTTP calls — must be in thread
+        result = await asyncio.to_thread(run_keyword_discovery, cfg, body.extra_seeds or [])
         await sse_publisher.publish("seo_kw", {"type": "done", **result})
 
     task = asyncio.create_task(_do_discover())
@@ -1189,13 +1188,13 @@ async def seo_rebuild_topics(background_tasks: BackgroundTasks, _: None = Auth) 
     Slow (~2-3 min) — run once daily or on demand.
     """
     async def _do_rebuild():
-        import asyncio
         from ..config import load_config
         from ..publisher.wp_manager import list_posts
         from ..seo.topic_authority import rebuild_topic_map
         cfg    = load_config()
         posts, _, _ = await asyncio.to_thread(list_posts, cfg, 1, 100, "publish")
-        result = rebuild_topic_map(cfg, posts)
+        # rebuild_topic_map makes many OpenAI calls — MUST run in thread pool
+        result = await asyncio.to_thread(rebuild_topic_map, cfg, posts)
         await sse_publisher.publish("seo_topics", {
             "type": "done",
             "authority_score": result.get("authority_score"),
@@ -1256,7 +1255,7 @@ async def seo_rebuild_scores(background_tasks: BackgroundTasks, _: None = Auth) 
         from ..seo.seo_scorer import score_all_articles
         cfg    = load_config()
         posts, _, _ = await asyncio.to_thread(list_posts, cfg, 1, 100, "publish")
-        result = score_all_articles(posts)
+        result = await asyncio.to_thread(score_all_articles, posts)
         await sse_publisher.publish("seo_scores", {"type": "done", **result})
 
     task = asyncio.create_task(_do_score())
