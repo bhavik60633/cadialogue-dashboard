@@ -132,6 +132,7 @@ export default function SeoDashboardPage() {
 
   useEffect(() => { load() }, [load])
 
+  // Quick fire-and-forget action (result is immediate or not important)
   const run = async (
     jobKey: string,
     url: string,
@@ -147,6 +148,55 @@ export default function SeoDashboardPage() {
       } else {
         showToast(`Error: ${res.status}`)
       }
+    } catch (e) {
+      showToast(`Failed: ${e}`)
+    }
+    setJobs(j => ({ ...j, [jobKey]: false }))
+  }
+
+  // Long-running background job: keeps button in "Working…" state and polls
+  // until the given field in /seo/dashboard changes, then reloads.
+  const runLong = async (
+    jobKey: string,
+    postUrl: string,
+    pollUrl: string,
+    changedFn: (prev: DashboardData, next: DashboardData) => boolean,
+    successMsg = "Done!"
+  ) => {
+    setJobs(j => ({ ...j, [jobKey]: true }))
+    try {
+      const startRes = await fetch(postUrl, { method: "POST" })
+      if (!startRes.ok) {
+        showToast(`Error starting: ${startRes.status}`)
+        setJobs(j => ({ ...j, [jobKey]: false }))
+        return
+      }
+
+      showToast("Running in background… this may take 1-3 minutes")
+
+      // Poll every 6 seconds for up to 4 minutes
+      const deadline = Date.now() + 4 * 60 * 1000
+      let prevData = data
+      while (Date.now() < deadline) {
+        await new Promise<void>(r => setTimeout(r, 6000))
+        try {
+          const pollRes = await fetch(pollUrl)
+          if (pollRes.ok) {
+            const newData: DashboardData = await pollRes.json()
+            if (prevData && changedFn(prevData, newData)) {
+              setData(newData)
+              showToast(successMsg)
+              setJobs(j => ({ ...j, [jobKey]: false }))
+              return
+            }
+            prevData = newData
+          }
+        } catch { /* keep polling */ }
+      }
+
+      // Timeout — reload anyway and let user see what we have
+      await load()
+      showToast("Took longer than expected — check back in a moment")
     } catch (e) {
       showToast(`Failed: ${e}`)
     }
@@ -169,8 +219,13 @@ export default function SeoDashboardPage() {
           label="Build Embeddings (first-time setup)"
           variant="primary"
           loading={jobs["embed"]}
-          onClick={() => run("embed", "/api/py/seo/embeddings/rebuild", "POST",
-            "Building embeddings for all articles…")}
+          onClick={() => runLong(
+            "embed",
+            "/api/py/seo/embeddings/rebuild",
+            "/api/py/seo/dashboard",
+            (_prev, next) => next.embeddings.count > 0,
+            "Embeddings built! Reload to see full dashboard."
+          )}
         />
       </div>
     )
@@ -224,8 +279,13 @@ export default function SeoDashboardPage() {
           <ActionButton
             label="Rebuild Topic Map"
             loading={jobs["topics"]}
-            onClick={() => run("topics", "/api/py/seo/topics/rebuild", "POST",
-              "Rebuilding topical authority map…")}
+            onClick={() => runLong(
+              "topics",
+              "/api/py/seo/topics/rebuild",
+              "/api/py/seo/dashboard",
+              (prev, next) => next.coverage.last_updated > (prev.coverage.last_updated ?? 0),
+              "Topic map rebuilt! Authority score updated."
+            )}
           />
         </div>
         {/* Authority bar */}
@@ -285,8 +345,13 @@ export default function SeoDashboardPage() {
             <ActionButton
               label="Rebuild Embeddings"
               loading={jobs["embed"]}
-              onClick={() => run("embed", "/api/py/seo/embeddings/rebuild", "POST",
-                "Rebuilding article embeddings…")}
+              onClick={() => runLong(
+                "embed",
+                "/api/py/seo/embeddings/rebuild",
+                "/api/py/seo/dashboard",
+                (prev, next) => next.embeddings.count > 0 && next.embeddings.last_updated > (prev.embeddings.last_updated ?? 0),
+                "Embeddings rebuilt!"
+              )}
             />
           </div>
 
@@ -324,8 +389,13 @@ export default function SeoDashboardPage() {
             <ActionButton
               label="Score All Posts"
               loading={jobs["score"]}
-              onClick={() => run("score", "/api/py/seo/scores/rebuild", "POST",
-                "Scoring all articles…")}
+              onClick={() => runLong(
+                "score",
+                "/api/py/seo/scores/rebuild",
+                "/api/py/seo/dashboard",
+                (prev, next) => next.scoring.articles_scored > 0 && next.scoring.articles_scored !== prev.scoring.articles_scored,
+                "All posts scored!"
+              )}
             />
           </div>
         </div>

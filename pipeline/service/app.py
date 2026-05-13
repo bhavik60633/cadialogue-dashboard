@@ -1014,15 +1014,21 @@ async def seo_rebuild_embeddings(background_tasks: BackgroundTasks, _: None = Au
     Runs in a THREAD POOL so the event loop is never blocked.
     """
     async def _do_rebuild():
-        from ..config import load_config
-        from ..publisher.wp_manager import list_posts
-        from ..seo.embeddings_store import rebuild_all_embeddings
+        try:
+            from ..config import load_config
+            from ..publisher.wp_manager import list_posts
+            from ..seo.embeddings_store import rebuild_all_embeddings
 
-        cfg             = load_config()
-        # Both WP fetch and embedding loop run in thread pool (blocking I/O)
-        posts, total, _ = await asyncio.to_thread(list_posts, cfg, 1, 100, "publish")
-        count           = await asyncio.to_thread(rebuild_all_embeddings, cfg, posts)
-        await sse_publisher.publish("seo_rebuild", {"type": "done", "count": count})
+            cfg             = load_config()
+            # Both WP fetch and embedding loop run in thread pool (blocking I/O)
+            posts, total, _ = await asyncio.to_thread(list_posts, cfg, 1, 100, "publish")
+            logger.info(f"[embed_rebuild] fetched {len(posts)} posts from WP")
+            count           = await asyncio.to_thread(rebuild_all_embeddings, cfg, posts)
+            logger.info(f"[embed_rebuild] done — {count} embeddings built")
+            await sse_publisher.publish("seo_rebuild", {"type": "done", "count": count})
+        except Exception as exc:
+            logger.exception(f"[embed_rebuild] FAILED: {exc}")
+            await sse_publisher.publish("seo_rebuild", {"type": "error", "message": str(exc)})
 
     task = asyncio.create_task(_do_rebuild())
     job_registry.register("seo_embed_rebuild", task, "seo_embed_rebuild")
@@ -1188,18 +1194,24 @@ async def seo_rebuild_topics(background_tasks: BackgroundTasks, _: None = Auth) 
     Slow (~2-3 min) — run once daily or on demand.
     """
     async def _do_rebuild():
-        from ..config import load_config
-        from ..publisher.wp_manager import list_posts
-        from ..seo.topic_authority import rebuild_topic_map
-        cfg    = load_config()
-        posts, _, _ = await asyncio.to_thread(list_posts, cfg, 1, 100, "publish")
-        # rebuild_topic_map makes many OpenAI calls — MUST run in thread pool
-        result = await asyncio.to_thread(rebuild_topic_map, cfg, posts)
-        await sse_publisher.publish("seo_topics", {
-            "type": "done",
-            "authority_score": result.get("authority_score"),
-            "pillars": len(result.get("pillars", [])),
-        })
+        try:
+            from ..config import load_config
+            from ..publisher.wp_manager import list_posts
+            from ..seo.topic_authority import rebuild_topic_map
+            cfg    = load_config()
+            posts, _, _ = await asyncio.to_thread(list_posts, cfg, 1, 100, "publish")
+            logger.info(f"[topic_rebuild] fetched {len(posts)} posts from WP")
+            # rebuild_topic_map makes many OpenAI calls — MUST run in thread pool
+            result = await asyncio.to_thread(rebuild_topic_map, cfg, posts)
+            logger.info(f"[topic_rebuild] done — authority_score={result.get('authority_score')}")
+            await sse_publisher.publish("seo_topics", {
+                "type": "done",
+                "authority_score": result.get("authority_score"),
+                "pillars": len(result.get("pillars", [])),
+            })
+        except Exception as exc:
+            logger.exception(f"[topic_rebuild] FAILED: {exc}")
+            await sse_publisher.publish("seo_topics", {"type": "error", "message": str(exc)})
 
     task = asyncio.create_task(_do_rebuild())
     job_registry.register("seo_topic_rebuild", task, "seo_topic_rebuild")
@@ -1249,14 +1261,19 @@ async def seo_all_scores(_: None = Auth) -> dict:
 async def seo_rebuild_scores(background_tasks: BackgroundTasks, _: None = Auth) -> dict:
     """Re-score all published posts. Runs in background."""
     async def _do_score():
-        import asyncio
-        from ..config import load_config
-        from ..publisher.wp_manager import list_posts
-        from ..seo.seo_scorer import score_all_articles
-        cfg    = load_config()
-        posts, _, _ = await asyncio.to_thread(list_posts, cfg, 1, 100, "publish")
-        result = await asyncio.to_thread(score_all_articles, posts)
-        await sse_publisher.publish("seo_scores", {"type": "done", **result})
+        try:
+            from ..config import load_config
+            from ..publisher.wp_manager import list_posts
+            from ..seo.seo_scorer import score_all_articles
+            cfg    = load_config()
+            posts, _, _ = await asyncio.to_thread(list_posts, cfg, 1, 100, "publish")
+            logger.info(f"[score_rebuild] scoring {len(posts)} posts")
+            result = await asyncio.to_thread(score_all_articles, posts)
+            logger.info(f"[score_rebuild] done — avg {result.get('average_score')}")
+            await sse_publisher.publish("seo_scores", {"type": "done", **result})
+        except Exception as exc:
+            logger.exception(f"[score_rebuild] FAILED: {exc}")
+            await sse_publisher.publish("seo_scores", {"type": "error", "message": str(exc)})
 
     task = asyncio.create_task(_do_score())
     job_registry.register("seo_score_rebuild", task, "seo_score_rebuild")
