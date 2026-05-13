@@ -546,6 +546,8 @@ function ProgrammaticSection({
     const key = `prog_${item.slug}`
     setJobs(j => ({ ...j, [key]: true }))
     try {
+      // POST returns immediately — GPT-4o takes 40-90s which exceeds Render's
+      // 30s request timeout if we wait synchronously
       const res = await fetch("/api/py/seo/programmatic/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -554,14 +556,43 @@ function ProgrammaticSection({
           params: item,
         }),
       })
-      if (res.ok) {
-        const d = await res.json()
-        showToast(`Generated: ${d.title} (${d.word_count} words)`)
-        loadQueue()
-      } else {
-        showToast("Generation failed")
+      if (!res.ok) {
+        showToast(`Failed to start generation (${res.status})`)
+        setJobs(j => ({ ...j, [key]: false }))
+        return
       }
-    } catch { showToast("Network error") }
+
+      const { slug } = await res.json()
+      showToast("Generating… GPT-4o is writing the article (up to 90s)")
+
+      // Poll status every 4s for up to 3 minutes
+      const deadline = Date.now() + 3 * 60 * 1000
+      while (Date.now() < deadline) {
+        await new Promise<void>(r => setTimeout(r, 4000))
+        try {
+          const statusRes = await fetch(`/api/py/seo/programmatic/status/${slug}`)
+          if (statusRes.ok) {
+            const s = await statusRes.json()
+            if (s.status === "done") {
+              showToast(`✓ Generated: ${s.title} (${s.word_count} words)`)
+              loadQueue()
+              setJobs(j => ({ ...j, [key]: false }))
+              return
+            }
+            if (s.status === "error") {
+              showToast(`Generation failed: ${s.message}`)
+              setJobs(j => ({ ...j, [key]: false }))
+              return
+            }
+            // status === "pending" — keep polling
+          }
+        } catch { /* keep polling */ }
+      }
+
+      showToast("Timed out — try again or check Render logs")
+    } catch (e) {
+      showToast(`Network error: ${e}`)
+    }
     setJobs(j => ({ ...j, [key]: false }))
   }
 

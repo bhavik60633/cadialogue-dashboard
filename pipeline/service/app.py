@@ -1355,18 +1355,58 @@ class ProgrammaticGenerateRequest(BaseModel):
 @app.post("/seo/programmatic/generate")
 async def seo_prog_generate(body: ProgrammaticGenerateRequest, _: None = Auth) -> dict:
     """
-    Generate one programmatic SEO page using the specified template + params.
-    Returns the page content ready to review and publish.
+    Fire-and-forget: starts generation in background and returns the slug immediately.
+    GPT-4o takes 40-90s — holding the HTTP connection that long causes Render's
+    30-second timeout to kill the request.  Poll GET /seo/programmatic/status/{slug}
+    every 3s until status == "done" or "error".
     """
-    import asyncio
-    from ..config import load_config
-    from ..seo.programmatic_seo import generate_programmatic_page
+    from ..seo.programmatic_seo import _build_page_meta
 
-    cfg    = load_config()
-    result = await asyncio.to_thread(
-        generate_programmatic_page, body.template_type, body.params, cfg
-    )
-    return result
+    # Compute slug synchronously (fast — no API calls)
+    try:
+        meta = _build_page_meta(body.template_type, body.params)
+        slug = meta["slug"]
+    except Exception:
+        slug = f"prog_{int(time.time())}"
+
+    async def _do_generate():
+        try:
+            from ..config import load_config
+            from ..seo.programmatic_seo import generate_programmatic_page
+            cfg    = load_config()
+            result = await asyncio.to_thread(
+                generate_programmatic_page, body.template_type, body.params, cfg
+            )
+            logger.info(f"[prog_generate] done — {result.get('title')} ({result.get('word_count')} words)")
+            await sse_publisher.publish(f"prog_{slug}", {"type": "done", "slug": slug, **{k: v for k, v in result.items() if k != "html_content"}})
+        except Exception as exc:
+            logger.exception(f"[prog_generate] FAILED for {slug}: {exc}")
+            await sse_publisher.publish(f"prog_{slug}", {"type": "error", "slug": slug, "message": str(exc)})
+
+    task = asyncio.create_task(_do_generate())
+    job_registry.register(f"prog_{slug}", task, f"prog_{slug}")
+    return {"status": "started", "slug": slug}
+
+
+@app.get("/seo/programmatic/status/{slug:path}")
+async def seo_prog_status(slug: str, _: None = Auth) -> dict:
+    """
+    Poll this after POSTing to /generate.
+    Returns {"status": "pending"} while running,
+            {"status": "done", ...page_meta} when complete,
+            {"status": "error", "message": ...} on failure.
+    """
+    from ..seo.programmatic_seo import load_prog_store
+    store = load_prog_store()
+    if slug in store.get("generated", {}):
+        page = store["generated"][slug]
+        return {"status": "done", "slug": slug, "title": page.get("title"), "word_count": page.get("word_count")}
+    # Check if a job is still actively running
+    job = job_registry.get(f"prog_{slug}")
+    if job and not job["task"].done():
+        return {"status": "pending"}
+    # Not in generated and no running job — either never started or failed
+    return {"status": "unknown"}
 
 
 @app.get("/seo/programmatic/generated")
