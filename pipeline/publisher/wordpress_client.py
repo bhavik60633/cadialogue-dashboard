@@ -30,29 +30,72 @@ def _auth_header(config: Config) -> dict:
 def _markdown_to_html(md: str) -> str:
     """
     Convert Claude's markdown output to WordPress-compatible HTML.
-    Targeted regex — no full markdown parser dependency.
+
+    Uses the python-markdown library with extensions for:
+      - tables          → proper <table> with <thead>/<tbody>
+      - toc             → auto-injects id="..." on h2/h3 so [text](#anchor) ToC works
+      - sane_lists      → mixed ordered/unordered lists render correctly
+      - fenced_code     → ```code``` blocks
+      - attr_list       → {.classname} attributes
+      - md_in_html      → markdown inside HTML blocks (figures, etc.)
+
+    Falls back to the legacy regex converter only if `markdown` import fails
+    (should never happen in production since it's pinned in requirements.txt).
+    """
+    try:
+        import markdown as _md
+        html = _md.markdown(
+            md,
+            extensions=[
+                "tables",
+                "toc",
+                "sane_lists",
+                "fenced_code",
+                "attr_list",
+                "md_in_html",
+            ],
+            extension_configs={
+                # Make heading anchor IDs match GitHub-style slugs:
+                # "Impact on Gold and Silver Prices" → "impact-on-gold-and-silver-prices"
+                "toc": {"slugify": _slugify_heading, "anchorlink": False, "permalink": False},
+            },
+            output_format="html5",
+        )
+        # WP-specific class hooks so the theme can style tables
+        html = html.replace("<table>", '<table class="cad-article-table">')
+        return html
+    except ImportError:
+        logger.warning("python-markdown not installed — falling back to regex converter")
+        return _markdown_to_html_regex(md)
+
+
+def _slugify_heading(value: str, separator: str = "-") -> str:
+    """GitHub-style heading slug for stable ToC anchor links."""
+    value = value.lower().strip()
+    value = re.sub(r"[^\w\s-]", "", value)
+    value = re.sub(r"[\s_]+", separator, value)
+    return value
+
+
+def _markdown_to_html_regex(md: str) -> str:
+    """
+    Fallback regex-based converter (kept for resilience).
+    Does NOT handle tables or markdown links — only headings, bold/italic, lists, paragraphs.
     """
     html = md
-
-    # H2 and H3 headings
     html = re.sub(r"^## (.+)$", r"<h2>\1</h2>", html, flags=re.MULTILINE)
     html = re.sub(r"^### (.+)$", r"<h3>\1</h3>", html, flags=re.MULTILINE)
-    # H1 (shouldn't appear in body, but strip it)
     html = re.sub(r"^# .+$", "", html, flags=re.MULTILINE)
-
-    # Bold and italic
     html = re.sub(r"\*\*\*(.+?)\*\*\*", r"<strong><em>\1</em></strong>", html)
     html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html)
     html = re.sub(r"\*(.+?)\*", r"<em>\1</em>", html)
 
-    # Unordered lists
     def replace_ul(m):
         items = re.findall(r"^[-*] (.+)$", m.group(0), re.MULTILINE)
         return "<ul>\n" + "\n".join(f"<li>{i}</li>" for i in items) + "\n</ul>"
 
     html = re.sub(r"(?:^[-*] .+\n?)+", replace_ul, html, flags=re.MULTILINE)
 
-    # Paragraphs — wrap blocks separated by blank lines
     blocks = html.split("\n\n")
     wrapped = []
     for block in blocks:
@@ -63,9 +106,7 @@ def _markdown_to_html(md: str) -> str:
             wrapped.append(block)
         else:
             wrapped.append(f"<p>{block}</p>")
-    html = "\n\n".join(wrapped)
-
-    return html
+    return "\n\n".join(wrapped)
 
 
 @with_retry_sync(max_attempts=3, delay_seconds=5)

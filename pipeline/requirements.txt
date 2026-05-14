@@ -24,6 +24,9 @@ google-api-python-client>=2.118.0
 beautifulsoup4>=4.12.0
 lxml>=5.1.0
 
+# ── Markdown → HTML (for article body rendering in WordPress) ─────────────
+markdown>=3.6              # Tables, links, heading IDs, fenced code, ordered lists
+
 # ── Text processing ───────────────────────────────────────────────────────
 fuzzywuzzy>=0.18.0
 python-Levenshtein>=0.25.0

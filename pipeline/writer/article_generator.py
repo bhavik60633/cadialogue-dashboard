@@ -112,7 +112,7 @@ MANDATORY ARTICLE STRUCTURE
 ════════════════════════════════════════
 
 1. HOOK OPENING (no heading) — 2-3 sentences, most surprising India-specific fact first
-2. ## Table of Contents — markdown list linking to all H2 sections below
+2. ## Table of Contents — markdown bullet list, each item linking to an H2 below
 3. ## [Context Heading] — background / what led here (2-3 paragraphs)
 4. ## [Core Analysis Heading] — main news with specific data points, include a comparison table or bullet list
 5. ## [India Impact Heading] — what this means for Indian retail investors specifically
@@ -127,7 +127,7 @@ CONTENT REQUIREMENTS
 ════════════════════════════════════════
 - MINIMUM 2500 words — aim for 3000-3500 words
 - Use ₹ for Indian currency, $ for USD throughout
-- Include AT LEAST ONE HTML-style comparison table (markdown table syntax)
+- Include AT LEAST ONE comparison table in proper markdown table syntax (see format below)
 - Include AT LEAST ONE bullet list with 5+ items
 - Every statistic must be specific (write 74,892 not "around 75,000")
 - Include India-specific regulatory context (RBI, SEBI, NSE, BSE, ICAI as relevant)
@@ -138,8 +138,40 @@ CONTENT REQUIREMENTS
 - Each H2 section ends with a clear takeaway sentence
 - FAQ questions must be what retail investors ACTUALLY search on Google
 
-OUTPUT FORMAT: Plain markdown with ## for H2, ### for H3, **bold** for emphasis.
-Do NOT include # H1 (the title is set separately).
+════════════════════════════════════════
+EXACT MARKDOWN FORMAT (CRITICAL — DO NOT DEVIATE)
+════════════════════════════════════════
+
+HEADINGS: `## Heading` and `### Subheading` (NEVER use `**Heading**` as a substitute)
+
+TABLE OF CONTENTS: Use simple lowercase-hyphen anchors that match the H2 text below.
+Example — if you have `## Impact on Gold Prices` later, the ToC entry is:
+  - [Impact on Gold Prices](#impact-on-gold-prices)
+Rules for anchor slugs:
+  • lowercase
+  • spaces → single hyphen
+  • drop all punctuation
+  • drop trailing/leading hyphens
+
+TABLES: Use proper GitHub-flavoured markdown — every column separator must be a `|`,
+the header divider row MUST use exactly three dashes per column:
+
+  | Parameter | Previous Rate | New Rate |
+  | --- | --- | --- |
+  | Gold Import Tariff | 7.5% | 15.0% |
+  | Silver Import Tariff | 7.5% | 15.0% |
+
+Leave a BLANK LINE before AND after every table.
+
+LISTS:
+  - Use `- item` for bullets (consistent — never mix `-` and `*` in same list)
+  - Use `1. item` then `2. item` for numbered lists
+  - Always leave a BLANK LINE before and after every list
+
+LINKS: `[anchor text](https://full-url)` — never bare URLs.
+
+OUTPUT: Plain markdown only — no `<html>` tags, no fenced ```markdown``` wrapper.
+Do NOT include `# H1` (the title is set separately).
 The article body starts directly after the hook — no "Introduction" label."""
 
     response = client.chat.completions.create(
