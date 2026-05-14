@@ -258,6 +258,60 @@ export default function SeoDashboardPage() {
             onClick={() => { load(); showToast("Refreshed") }}
           />
           <ActionButton
+            label="Repair Old Articles"
+            variant="danger"
+            loading={jobs["repair"]}
+            onClick={async () => {
+              setJobs(j => ({ ...j, repair: true }))
+              try {
+                const startRes = await fetch("/api/py/seo/repair/articles", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ dry_run: false }),
+                })
+                if (!startRes.ok) {
+                  showToast(`Error starting: ${startRes.status}`)
+                  setJobs(j => ({ ...j, repair: false }))
+                  return
+                }
+                const startJson = await startRes.json()
+                if (startJson.status === "already_running") {
+                  showToast("Repair already in progress — polling…")
+                } else {
+                  showToast("Repairing posts… fixing tables, ToC links, anchor IDs")
+                }
+
+                // Poll until done
+                const deadline = Date.now() + 10 * 60 * 1000  // 10 min max
+                while (Date.now() < deadline) {
+                  await new Promise<void>(r => setTimeout(r, 5000))
+                  try {
+                    const statusRes = await fetch("/api/py/seo/repair/status")
+                    if (statusRes.ok) {
+                      const s = await statusRes.json()
+                      if (s.state === "done") {
+                        const sum = s.summary || {}
+                        showToast(`✓ Repaired ${sum.repaired || 0} of ${sum.scanned || 0} posts (${sum.skipped_clean || 0} were already clean)`)
+                        setJobs(j => ({ ...j, repair: false }))
+                        return
+                      }
+                      if (s.state === "error") {
+                        showToast(`❌ ${s.message}`)
+                        setJobs(j => ({ ...j, repair: false }))
+                        return
+                      }
+                      // state === "running" — keep polling
+                    }
+                  } catch { /* keep polling */ }
+                }
+                showToast("Repair took longer than expected — refresh and check status")
+              } catch (e) {
+                showToast(`Failed: ${e}`)
+              }
+              setJobs(j => ({ ...j, repair: false }))
+            }}
+          />
+          <ActionButton
             label="Batch Index URLs"
             variant="primary"
             loading={jobs["batchindex"]}

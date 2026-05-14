@@ -1007,6 +1007,9 @@ async def wp_get_categories(_: None = Auth) -> dict:
 # In-memory store for programmatic gen errors (cleared after first poll read)
 _prog_errors: dict[str, str] = {}
 
+# In-memory store for article-repair job results (one slot — only one repair at a time)
+_repair_result: dict = {"state": "idle"}  # state: idle | running | done | error
+
 
 # ── SEO: Embeddings ────────────────────────────────────────────────────────────
 
@@ -1436,6 +1439,68 @@ async def seo_prog_generated(_: None = Auth) -> dict:
     # Strip html_content to keep response small
     slim   = [{k: v for k, v in p.items() if k != "html_content"} for p in pages]
     return {"pages": slim, "count": len(slim)}
+
+
+# ── SEO: Repair existing articles (one-time fix for broken markdown) ──────────
+
+class RepairRequest(BaseModel):
+    dry_run: bool = False
+
+
+@app.post("/seo/repair/articles")
+async def seo_repair_articles(body: RepairRequest, _: None = Auth) -> dict:
+    """
+    Walk every published WordPress post and fix:
+      - markdown links [text](url) → <a href="url">text</a>
+      - pipe-style tables → proper <table>
+      - en-dash sub-bullets → <li>
+      - missing heading IDs (so ToC anchor links jump correctly)
+
+    Fires a background task. Poll GET /seo/repair/status to watch progress.
+    """
+    if _repair_result.get("state") == "running":
+        return {"status": "already_running"}
+
+    _repair_result.update({"state": "running", "started_at": time.time(), "dry_run": body.dry_run})
+
+    async def _do_repair():
+        try:
+            from ..config import load_config
+            from ..publisher.wp_manager import list_posts, update_post
+            from ..seo.article_repair import repair_all_posts
+
+            cfg = load_config()
+            logger.info(f"[repair] starting (dry_run={body.dry_run})")
+            summary = await asyncio.to_thread(
+                repair_all_posts,
+                cfg,
+                list_posts,
+                update_post,
+                body.dry_run,
+            )
+            logger.info(f"[repair] done — {summary['repaired']}/{summary['scanned']} posts updated")
+            _repair_result.update({
+                "state": "done",
+                "finished_at": time.time(),
+                "summary": summary,
+            })
+        except Exception as exc:
+            logger.exception(f"[repair] FAILED: {exc}")
+            _repair_result.update({
+                "state": "error",
+                "finished_at": time.time(),
+                "message": str(exc),
+            })
+
+    task = asyncio.create_task(_do_repair())
+    job_registry.register("article_repair", task, "article_repair")
+    return {"status": "started"}
+
+
+@app.get("/seo/repair/status")
+async def seo_repair_status(_: None = Auth) -> dict:
+    """Poll for current state of the article-repair job."""
+    return dict(_repair_result)
 
 
 # ── SEO: Sitemap & Indexing ────────────────────────────────────────────────────
