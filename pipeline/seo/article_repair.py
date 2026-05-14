@@ -10,6 +10,15 @@ What the old converter got wrong (and what this module fixes):
   3. Indented ToC items using en-dash characters ("– item") were treated
      as plain text → render as raw dashes
 
+Table separator row variants handled:
+  | --- | --- |           ASCII hyphens (standard GFM)
+  | :---: | ---: |        Alignment colons
+  | — | — |               Em-dash (U+2014) — Claude sometimes generates these
+  | – | – |               En-dash (U+2013)
+  | ——— | ——— |           Long em-dash runs
+  | &#8212; | &#8212; |   HTML-encoded em-dash
+  |———|———|               Tight form without spaces
+
 What the old converter got right (so we don't touch):
   - `## H2` → `<h2>` ✓
   - `### H3` → `<h3>` ✓
@@ -59,16 +68,67 @@ def _fix_markdown_links(html: str, stats: dict) -> str:
 
 # ── 2. Pipe-table detection + conversion ──────────────────────────────────────
 
-# A separator row: `|---|---|`  or  `| --- | :---: |  etc.
-_SEP_ROW_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
 # A data row: `| col | col |` — must contain at least 2 cells
 _DATA_ROW_RE = re.compile(r"^\s*\|.+\|.+\|\s*$")
+
+# Characters that are valid inside a separator cell (dashes in any form + colon)
+_SEP_CELL_CHARS = frozenset(
+    "-"          # ASCII hyphen
+    "–"     # en-dash –
+    "—"     # em-dash —
+    "―"     # horizontal bar ―
+    "−"     # minus sign −
+    ":"          # alignment colon
+    " \t"        # whitespace
+)
+# At least one of these must appear in a separator cell
+_ACTUAL_DASH_CHARS = frozenset("-–—―−")
+
+
+def _is_separator_row(line: str) -> bool:
+    """
+    Return True if *line* is a GFM table separator row in any supported form.
+
+    Recognised separator cells (between pipes):
+      ---        :---:       ---:       (ASCII hyphens ± alignment colons)
+      ———        –––         −−−        (em/en/minus dash)
+      ——         –           —          (even single dash counts per column)
+
+    All cells must contain ONLY separator characters. At least one cell must
+    have at least one actual dash character (rules out `|   |   |` blank rows).
+    """
+    stripped = line.strip()
+    # Must start or end with a pipe (even `---` without pipes is not a table row)
+    if not ("|" in stripped):
+        return False
+
+    inner = stripped.strip("|").strip()
+    if not inner:
+        return False
+
+    cells = [c.strip() for c in inner.split("|")]
+    if not cells:
+        return False
+
+    has_dash = False
+    for cell in cells:
+        if not cell:
+            # Empty cell is fine (outer pipes leave empty first/last cell)
+            continue
+        # Every character in this cell must be a separator character
+        if not all(ch in _SEP_CELL_CHARS for ch in cell):
+            return False
+        # Track whether we saw at least one real dash anywhere
+        if any(ch in _ACTUAL_DASH_CHARS for ch in cell):
+            has_dash = True
+
+    return has_dash
 
 
 def _row_to_cells(row: str) -> list[str]:
     """`| a | b | c |` → ['a', 'b', 'c']"""
     cells = [c.strip() for c in row.strip().strip("|").split("|")]
-    return [c for c in cells if c or True]  # keep empties for column alignment
+    return cells  # keep all cells (including empties) for column alignment
 
 
 def _rows_to_html_table(rows: list[list[str]]) -> str:
@@ -103,14 +163,11 @@ def _fix_pipe_tables(html: str, stats: dict) -> str:
     HTML tables.
 
     Strategy:
-      1. Normalise <br> back to newlines inside <p> tags
-      2. Look for sequences of <p>...</p> where the text content matches
-         the pipe-row pattern, possibly across multiple <p> tags
-      3. Convert the matched block to a <table>
+      1. Find consecutive <p> tags whose text content is pipe-delimited rows
+      2. Strip <p>/<br> wrapper tags to recover raw lines
+      3. Classify each line: separator row (skip), data row (keep as cells)
+      4. If we found ≥2 data rows AND a separator → emit a proper <table>
     """
-    # Pass A: normalise <br> → \n inside any block, BUT only as a working copy
-    # We'll do real surgery on the original HTML structure below.
-
     # Pattern: one or more consecutive <p> tags whose visible text starts and
     # ends with a pipe. Allow optional <br/> and whitespace inside.
     p_with_pipes_re = re.compile(
@@ -120,19 +177,27 @@ def _fix_pipe_tables(html: str, stats: dict) -> str:
 
     def replace_p_block(m: re.Match) -> str:
         block = m.group(0)
-        # Extract every pipe-row from the matched block
-        # Strip all <p>/<br> tags first to get clean lines
+        # Strip all <p>/<br> tags to get clean pipe-row lines
         text = re.sub(r"<br\s*/?>", "\n", block, flags=re.IGNORECASE)
         text = re.sub(r"</?p[^>]*>", "\n", text, flags=re.IGNORECASE)
-        text = text.replace("&amp;", "&").replace("&nbsp;", " ")
+        # Decode common HTML entities that WP / browser may have encoded
+        text = (text
+                .replace("&amp;", "&")
+                .replace("&nbsp;", " ")
+                .replace("&mdash;", "—")
+                .replace("&ndash;", "–")
+                .replace("&#8212;", "—")   # decimal em-dash
+                .replace("&#8211;", "–")   # decimal en-dash
+                .replace("&#x2014;", "—")  # hex em-dash
+                .replace("&#x2013;", "–")) # hex en-dash
         lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
 
         rows: list[list[str]] = []
         had_separator = False
         for ln in lines:
-            if _SEP_ROW_RE.match(ln):
+            if _is_separator_row(ln):
                 had_separator = True
-                continue
+                continue  # separator rows are structural — never add as data
             if _DATA_ROW_RE.match(ln):
                 rows.append(_row_to_cells(ln))
 
@@ -153,7 +218,7 @@ def _fix_pipe_tables(html: str, stats: dict) -> str:
 # These usually live INSIDE a <ul> that the converter built for the parent
 # bullets, so they appear as paragraphs interleaved with the <ul>.
 _ENDASH_PARA_RE = re.compile(
-    r'<p>\s*[–-]\s+(<a [^>]+>[^<]+</a>)\s*</p>',
+    r'<p>\s*[–\-]\s+(<a [^>]+>[^<]+</a>)\s*</p>',
     re.IGNORECASE,
 )
 
@@ -219,11 +284,27 @@ def repair_article_html(html: str) -> Tuple[str, dict]:
 
 
 def needs_repair(html: str) -> bool:
-    """Quick check: does this article have any of the broken patterns?"""
+    """
+    Quick check: does this article have any of the broken patterns?
+
+    Checked patterns:
+      - Markdown links: [text](url) still in the HTML as literal text
+      - ASCII hyphen separator rows: | --- | --- |
+      - Em-dash separator rows:      | — | — |  or  | ——— | ——— |
+      - En-dash separator rows:      | – | – |
+      - HTML-entity-encoded em-dash: | &#8212; | &#8212; |
+    """
+    # Markdown links not yet converted
     if _MD_LINK_RE.search(html):
         return True
-    # Cheap heuristic: a row of pipes followed by a dashes row anywhere
-    if re.search(r"\|\s*-{3,}\s*\|", html):
+    # ASCII-hyphen separator row (most common)
+    if re.search(r"\|\s*:?-{2,}:?\s*\|", html):
+        return True
+    # Em-dash / en-dash separator row (Claude sometimes generates these)
+    if re.search(r"\|\s*[–—―]{1,}\s*\|", html):
+        return True
+    # HTML-entity-encoded em-dash in separator row
+    if re.search(r"\|\s*(?:&mdash;|&#8212;|&#x2014;)\s*\|", html):
         return True
     return False
 
@@ -275,6 +356,7 @@ def repair_all_posts(config, list_posts_fn, update_post_fn, dry_run: bool = Fals
             try:
                 new_html, stats = repair_article_html(html)
                 if new_html == html:
+                    # needs_repair fired but nothing changed — mark clean
                     summary["skipped_clean"] += 1
                     continue
 

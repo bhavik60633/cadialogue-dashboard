@@ -154,12 +154,16 @@ Rules for anchor slugs:
   • drop trailing/leading hyphens
 
 TABLES: Use proper GitHub-flavoured markdown — every column separator must be a `|`,
-the header divider row MUST use exactly three dashes per column:
+the header divider row MUST use exactly three ASCII hyphens per column (NOT em-dashes, NOT
+en-dashes, NOT "—" or "–" — ONLY the ASCII hyphen character `-`):
 
   | Parameter | Previous Rate | New Rate |
   | --- | --- | --- |
   | Gold Import Tariff | 7.5% | 15.0% |
   | Silver Import Tariff | 7.5% | 15.0% |
+
+WRONG (do not use):  | — | — | — |   ← em-dashes break rendering
+CORRECT:             | --- | --- | --- |  ← ASCII hyphens only
 
 Leave a BLANK LINE before AND after every table.
 
