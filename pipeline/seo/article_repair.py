@@ -311,15 +311,23 @@ def needs_repair(html: str) -> bool:
 
 # ── Batch repair for the FastAPI endpoint ───────────────────────────────────
 
-def repair_all_posts(config, list_posts_fn, update_post_fn, dry_run: bool = False) -> dict:
+def repair_all_posts(
+    config,
+    list_posts_fn,
+    update_post_fn,
+    dry_run: bool = False,
+    force_all: bool = False,
+) -> dict:
     """
     Walk every published post and repair the ones that need it.
 
     Args:
       config:          pipeline Config
       list_posts_fn:   callable(config, page, per_page, status) -> (posts, total, total_pages)
-      update_post_fn:  callable(config, post_id, {"content": new_html}) -> dict
+      update_post_fn:  callable(config, post_id, data) -> dict
       dry_run:         if True, scan & report but don't actually update
+      force_all:       if True, repair ALL posts (bypasses needs_repair() check)
+                       Use when you want to also set clean excerpts on already-good posts.
 
     Returns aggregate stats.
     """
@@ -348,7 +356,7 @@ def repair_all_posts(config, list_posts_fn, update_post_fn, dry_run: bool = Fals
             if not html:
                 continue
 
-            if not needs_repair(html):
+            if not force_all and not needs_repair(html):
                 summary["skipped_clean"] += 1
                 continue
 
@@ -361,7 +369,16 @@ def repair_all_posts(config, list_posts_fn, update_post_fn, dry_run: bool = Fals
                     continue
 
                 if not dry_run:
-                    update_post_fn(config, post_id, {"content": new_html})
+                    # Also set a clean excerpt so the homepage card shows
+                    # a proper 2-sentence summary instead of raw article text.
+                    clean_text = re.sub(r'<[^>]+>', ' ', new_html)
+                    clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+                    exc_words = clean_text.split()[:30]
+                    clean_exc = ' '.join(exc_words) + ('…' if len(exc_words) == 30 else '')
+                    update_post_fn(config, post_id, {
+                        "content": new_html,
+                        "excerpt": clean_exc,
+                    })
 
                 summary["repaired"] += 1
                 summary["per_post"].append({

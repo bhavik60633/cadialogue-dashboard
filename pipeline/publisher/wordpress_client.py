@@ -181,9 +181,18 @@ def _build_payload(
     category_label = CATEGORY_MAP.get(category, "Finance")
     category_id = _get_or_create_category(category_label, config)
 
+    # Build a clean excerpt: prefer meta_description (145-155 chars, keyword-rich),
+    # fall back to first 30 words of stripped HTML content.
+    _clean = re.sub(r'<[^>]+>', ' ', html_content)
+    _clean = re.sub(r'\s+', ' ', _clean).strip()
+    _exc_words = _clean.split()
+    _auto_exc = ' '.join(_exc_words[:30]) + ('…' if len(_exc_words) > 30 else '')
+    excerpt_text = (seo_meta.meta_description or _auto_exc)[:250]
+
     payload: dict = {
         "title": seo_meta.title,
         "content": full_content,
+        "excerpt": excerpt_text,
         "status": status,
         "slug": seo_meta.slug,
         "categories": [category_id],

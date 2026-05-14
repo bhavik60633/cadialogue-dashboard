@@ -1445,6 +1445,7 @@ async def seo_prog_generated(_: None = Auth) -> dict:
 
 class RepairRequest(BaseModel):
     dry_run: bool = False
+    force_all: bool = False   # if True, repair ALL posts (not just ones that need_repair detects)
 
 
 @app.post("/seo/repair/articles")
@@ -1470,13 +1471,14 @@ async def seo_repair_articles(body: RepairRequest, _: None = Auth) -> dict:
             from ..seo.article_repair import repair_all_posts
 
             cfg = load_config()
-            logger.info(f"[repair] starting (dry_run={body.dry_run})")
+            logger.info(f"[repair] starting (dry_run={body.dry_run}, force_all={body.force_all})")
             summary = await asyncio.to_thread(
                 repair_all_posts,
                 cfg,
                 list_posts,
                 update_post,
                 body.dry_run,
+                body.force_all,
             )
             logger.info(f"[repair] done — {summary['repaired']}/{summary['scanned']} posts updated")
             _repair_result.update({

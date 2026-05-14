@@ -267,7 +267,7 @@ export default function SeoDashboardPage() {
                 const startRes = await fetch("/api/py/seo/repair/articles", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ dry_run: false }),
+                  body: JSON.stringify({ dry_run: false, force_all: true }),
                 })
                 if (!startRes.ok) {
                   showToast(`Error starting: ${startRes.status}`)
