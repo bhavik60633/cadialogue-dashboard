@@ -1707,6 +1707,48 @@ async def seo_dashboard(_: None = Auth) -> dict:
     }
 
 
+# ── Content: Instagram Shorts generator ───────────────────────────────────────
+
+# In-memory cache: avoid re-billing GPT-4o + NewsAPI on every page refresh
+_shorts_cache: dict = {}   # {"data": {...}, "expires_at": float}
+
+
+@app.get("/content/shorts")
+async def get_content_shorts(_: None = Auth) -> dict:
+    """
+    Return 10 Instagram 30-second scripts based on today's top world news.
+
+    Results are cached for 60 minutes — call POST /content/shorts/refresh to
+    force a fresh generation immediately.
+    """
+    import time
+
+    data = _shorts_cache.get("data")
+    expires_at = float(_shorts_cache.get("expires_at", 0))
+    if data and time.time() < expires_at:
+        return {**data, "from_cache": True, "cache_expires_in": int(expires_at - time.time())}
+
+    from ..config import load_config
+    from ..writer.shorts_generator import generate_shorts
+
+    cfg = load_config()
+    try:
+        result = await generate_shorts(cfg)
+        _shorts_cache["data"] = result
+        _shorts_cache["expires_at"] = time.time() + 3600   # 1-hour cache
+        return {**result, "from_cache": False, "cache_expires_in": 3600}
+    except Exception as exc:
+        logger.error(f"Shorts generation failed: {exc}")
+        raise HTTPException(500, str(exc))
+
+
+@app.post("/content/shorts/refresh")
+async def refresh_content_shorts(_: None = Auth) -> dict:
+    """Force-expire the cache and generate brand-new scripts from today's latest news."""
+    _shorts_cache.clear()
+    return await get_content_shorts(_)  # type: ignore[arg-type]
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 

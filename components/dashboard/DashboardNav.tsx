@@ -5,12 +5,13 @@ import { usePathname } from "next/navigation"
 import { useEffect, useState } from "react"
 
 const NAV_LINKS = [
-  { href: "/dashboard/queue",  label: "Today's Queue" },
-  { href: "/dashboard/review", label: "Review" },                 // ← new: drafts pending approval
-  { href: "/dashboard",        label: "Run History", exact: true },
-  { href: "/dashboard/topics", label: "Topic Library" },
-  { href: "/dashboard/posts",  label: "Posts" },
-  { href: "/dashboard/seo",    label: "SEO" },
+  { href: "/dashboard/queue",   label: "Today's Queue" },
+  { href: "/dashboard/review",  label: "Review" },                // ← drafts pending approval
+  { href: "/dashboard",         label: "Run History", exact: true },
+  { href: "/dashboard/topics",  label: "Topic Library" },
+  { href: "/dashboard/posts",   label: "Posts" },
+  { href: "/dashboard/content", label: "📱 Shorts" },             // ← Instagram Reels generator
+  { href: "/dashboard/seo",     label: "SEO" },
 ]
 
 export function DashboardNav() {
