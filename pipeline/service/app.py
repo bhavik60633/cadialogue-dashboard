@@ -182,6 +182,20 @@ async def batch_events(_: None = Auth) -> StreamingResponse:
 # ── Run endpoints ──────────────────────────────────────────────────────────────
 
 
+# IMPORTANT: this MUST be declared before GET /runs/{run_id} or FastAPI will
+# match "pending-review" as a run_id and return 404.
+@app.get("/runs/pending-review")
+async def list_pending_review(_: None = Auth) -> dict:
+    """List every run currently waiting for human approval to go live."""
+    runs = run_tracker.load_all_runs()
+    pending = [r for r in runs if r.get("topic_status") == "pending_review"]
+    pending.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    return {
+        "count": len(pending),
+        "runs":  [_safe_run(r) for r in pending],
+    }
+
+
 @app.get("/runs/{run_id}")
 async def get_run(run_id: str, _: None = Auth) -> dict:
     run = run_tracker.load_run(run_id)
@@ -333,17 +347,7 @@ async def reject_article(run_id: str, _: None = Auth) -> dict:
     }
 
 
-@app.get("/runs/pending-review")
-async def list_pending_review(_: None = Auth) -> dict:
-    """List every run currently waiting for human approval to go live."""
-    runs = run_tracker.load_all_runs()
-    pending = [r for r in runs if r.get("topic_status") == "pending_review"]
-    # newest first
-    pending.sort(key=lambda r: r.get("created_at", ""), reverse=True)
-    return {
-        "count": len(pending),
-        "runs":  [_safe_run(r) for r in pending],
-    }
+# (list_pending_review moved to top of /runs section — must come before /runs/{run_id})
 
 
 # ── Article + image routes ─────────────────────────────────────────────────────
