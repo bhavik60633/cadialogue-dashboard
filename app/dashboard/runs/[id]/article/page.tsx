@@ -74,7 +74,20 @@ export default function ArticlePage() {
 
   const [article, setArticle]           = useState("")
   const [sections, setSections]         = useState<ArticleSection[]>([])
-  const [runMeta, setRunMeta]           = useState<{ title: string; wp_post_id?: number; wp_post_url?: string } | null>(null)
+  type FactFlag = { severity: string; category: string; snippet: string; detail: string }
+  type FactValidation = { is_clean: boolean; high_severity_count: number; flag_count: number; summary: string; flags: FactFlag[] }
+  type RunMeta = {
+    title: string
+    wp_post_id?: number
+    wp_post_url?: string
+    wp_preview_url?: string
+    wp_admin_url?: string
+    topic_status?: string
+    fact_validation?: FactValidation
+  }
+  const [runMeta, setRunMeta]           = useState<RunMeta | null>(null)
+  const [approveState, setApproveState] = useState<"idle" | "approving" | "approved" | "rejecting" | "rejected" | "error">("idle")
+  const [approveError, setApproveError] = useState("")
   const [secState, setSecState]         = useState<Record<string, SectionImageState>>({})
   const [loading, setLoading]           = useState(true)
   const [error, setError]               = useState<string | null>(null)
@@ -95,7 +108,15 @@ export default function ArticlePage() {
         const draft = data._article_draft || ""
         setArticle(draft)
         setSections(splitSections(draft))
-        setRunMeta({ title: data.topic_meta?.title || data.topic || runId, wp_post_id: data.wp_post_id, wp_post_url: data.wp_post_url })
+        setRunMeta({
+          title:           data.topic_meta?.title || data.topic || runId,
+          wp_post_id:      data.wp_post_id,
+          wp_post_url:     data.wp_post_url,
+          wp_preview_url:  data.wp_preview_url,
+          wp_admin_url:    data.wp_admin_url,
+          topic_status:    data.topic_status,
+          fact_validation: data.fact_validation,
+        })
         if (data.images?.length) {
           const r: Record<string, SectionImageState> = {}
           for (const img of data.images) {
@@ -308,6 +329,48 @@ export default function ArticlePage() {
 
   const imagesReady = Object.values(secState).filter(s => s.generatedRatios).length
 
+  // ── Review-gate approval handlers ───────────────────────────────────────────
+
+  async function approveDraftForPublish() {
+    setApproveError("")
+    setApproveState("approving")
+    try {
+      const res = await fetch(`/api/py/runs/${runId}/approve-for-publish`, { method: "POST" })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j.detail || j.error || `HTTP ${res.status}`)
+      }
+      const data = await res.json()
+      setApproveState("approved")
+      setRunMeta(m => m ? { ...m, topic_status: "published", wp_post_url: data.wp_post_url } : m)
+    } catch (e) {
+      setApproveError(e instanceof Error ? e.message : String(e))
+      setApproveState("error")
+    }
+  }
+
+  async function rejectDraft() {
+    if (!confirm("Reject this article? The WordPress draft will be kept but not published.")) return
+    setApproveError("")
+    setApproveState("rejecting")
+    try {
+      const res = await fetch(`/api/py/runs/${runId}/reject-article`, { method: "POST" })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j.detail || j.error || `HTTP ${res.status}`)
+      }
+      setApproveState("rejected")
+      setRunMeta(m => m ? { ...m, topic_status: "rejected" } : m)
+    } catch (e) {
+      setApproveError(e instanceof Error ? e.message : String(e))
+      setApproveState("error")
+    }
+  }
+
+  const isPendingReview = runMeta?.topic_status === "pending_review"
+  const isPublished     = runMeta?.topic_status === "published" || approveState === "approved"
+  const isRejected      = runMeta?.topic_status === "rejected"  || approveState === "rejected"
+
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   if (loading) return <Skeleton />
@@ -345,7 +408,7 @@ export default function ArticlePage() {
               </button>
             </div>
           )}
-          {!editMode && (
+          {!editMode && !isPendingReview && !isPublished && !isRejected && (
             <button onClick={() => setShowPublish(true)}
               className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 hover:bg-red-500 px-4 py-1.5 text-[12px] font-semibold text-white transition-colors">
               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -365,6 +428,116 @@ export default function ArticlePage() {
           )}
         </div>
       </div>
+
+      {/* ── Review-gate banner (only when pending_review) ────────────────── */}
+      {isPendingReview && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4 space-y-3">
+          <div className="flex items-start gap-3">
+            <div className="rounded-full bg-amber-500/15 p-2 shrink-0">
+              <svg className="h-5 w-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+              </svg>
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-semibold text-amber-300">
+                Awaiting your review — not yet public
+              </div>
+              <div className="text-[12px] text-amber-200/70 mt-0.5">
+                This article was saved as a WordPress draft. Read it below, then click <b>Approve & Go Live</b> to publish, or <b>Reject</b> to discard.
+              </div>
+            </div>
+          </div>
+
+          {/* Fact-validation status */}
+          {runMeta?.fact_validation && (
+            <div className={`rounded-lg p-3 text-[12px] ${
+              runMeta.fact_validation.is_clean
+                ? "bg-emerald-500/5 border border-emerald-500/20 text-emerald-300"
+                : "bg-red-500/5 border border-red-500/30 text-red-300"
+            }`}>
+              <div className="flex items-center gap-2 font-medium mb-1">
+                {runMeta.fact_validation.is_clean ? "✓" : "⚠"} Fact-validator: {runMeta.fact_validation.summary}
+              </div>
+              {runMeta.fact_validation.flags.length > 0 && (
+                <ul className="mt-2 space-y-1.5 text-[11px] opacity-90">
+                  {runMeta.fact_validation.flags.slice(0, 6).map((f, i) => (
+                    <li key={i} className="leading-relaxed">
+                      <span className={`inline-block px-1.5 py-0.5 rounded mr-2 text-[10px] font-semibold uppercase ${
+                        f.severity === "high" ? "bg-red-500/30 text-red-100" : "bg-amber-500/20 text-amber-100"
+                      }`}>{f.severity}</span>
+                      <span className="font-mono">{f.detail}</span>
+                      <div className="text-neutral-400 mt-0.5 italic">…{f.snippet}…</div>
+                    </li>
+                  ))}
+                  {runMeta.fact_validation.flags.length > 6 &&
+                    <li className="opacity-70">+ {runMeta.fact_validation.flags.length - 6} more</li>}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {/* Action buttons */}
+          <div className="flex flex-wrap gap-2 pt-1">
+            {runMeta?.wp_preview_url && (
+              <a href={runMeta.wp_preview_url} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-700 bg-neutral-900/60 px-3 py-2 text-[12px] text-neutral-200 hover:bg-neutral-800 hover:border-neutral-600 transition-colors">
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                Preview live rendering
+              </a>
+            )}
+            {runMeta?.wp_admin_url && (
+              <a href={runMeta.wp_admin_url} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-700 bg-neutral-900/60 px-3 py-2 text-[12px] text-neutral-200 hover:bg-neutral-800 hover:border-neutral-600 transition-colors">
+                Edit in WP Admin
+              </a>
+            )}
+            <div className="flex-1" />
+            <button onClick={rejectDraft}
+              disabled={approveState === "approving" || approveState === "rejecting"}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-[12px] font-semibold text-red-300 hover:bg-red-500/20 hover:text-red-200 transition-colors disabled:opacity-40">
+              {approveState === "rejecting" ? "Rejecting…" : "Reject"}
+            </button>
+            <button onClick={approveDraftForPublish}
+              disabled={approveState === "approving" || approveState === "rejecting" || (runMeta?.fact_validation && !runMeta.fact_validation.is_clean)}
+              title={runMeta?.fact_validation && !runMeta.fact_validation.is_clean
+                ? "Resolve high-severity fact flags first (edit the article to remove or fix them)"
+                : "Promote the WordPress draft to public"}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-[12px] font-semibold text-white transition-colors disabled:bg-neutral-700 disabled:text-neutral-400 disabled:cursor-not-allowed">
+              {approveState === "approving" ? "Publishing…" : "✓ Approve & Go Live"}
+            </button>
+          </div>
+
+          {approveError && (
+            <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-[12px] text-red-300">
+              {approveError}
+            </div>
+          )}
+        </div>
+      )}
+
+      {isPublished && approveState === "approved" && (
+        <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/5 p-4 flex items-center gap-3">
+          <span className="text-emerald-400 text-lg">✓</span>
+          <div className="flex-1">
+            <div className="text-[13px] font-semibold text-emerald-300">Live on cadialogue.in</div>
+            {runMeta?.wp_post_url && (
+              <a href={runMeta.wp_post_url} target="_blank" rel="noopener noreferrer"
+                className="text-[12px] text-emerald-200/80 hover:text-emerald-100 underline underline-offset-2">
+                {runMeta.wp_post_url}
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+
+      {isRejected && (
+        <div className="rounded-xl border border-neutral-700 bg-neutral-900/40 p-4 text-[12px] text-neutral-400">
+          Rejected. The WordPress draft is preserved at <a className="text-neutral-300 underline" href={runMeta?.wp_admin_url || "#"} target="_blank" rel="noopener noreferrer">WP Admin</a> in case you want to recover any content.
+        </div>
+      )}
 
       {/* Edit mode */}
       {editMode && (

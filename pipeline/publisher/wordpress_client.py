@@ -211,9 +211,17 @@ async def publish_post(
     config: Config,
     category: str = "global_market",
     featured_image_url: Optional[str] = None,
+    status: str = "draft",
 ) -> dict:
-    """Publish article to WordPress. Returns the created post dict."""
-    logger.info(f"Publishing: {seo_meta.title}")
+    """
+    Push article to WordPress. Returns the created post dict.
+
+    `status` defaults to "draft" — the article does NOT go public until a
+    reviewer transitions it via `transition_draft_to_publish()`.
+    Pass status="publish" explicitly to skip the review gate (legacy / urgent).
+    """
+    label = "Publishing" if status == "publish" else "Saving as draft"
+    logger.info(f"{label}: {seo_meta.title}")
 
     # Upload featured image if provided
     featured_media_id = None
@@ -224,7 +232,7 @@ async def publish_post(
 
     payload = _build_payload(
         article, seo_meta, schemas_html, category, config,
-        status="publish", featured_media_id=featured_media_id,
+        status=status, featured_media_id=featured_media_id,
     )
 
     resp = requests.post(
@@ -235,14 +243,42 @@ async def publish_post(
     )
     resp.raise_for_status()
     post = resp.json()
-    logger.info(f"Published post ID={post['id']} URL={post['link']}")
+    logger.info(f"{label} done — post ID={post['id']} status={post.get('status')} URL={post.get('link')}")
 
     # ── Auto-trigger SEO post-publish pipeline ────────────────────────────────
-    # 1. Embed the new article for future internal linking
-    # 2. Run internal linking (30+ outgoing links + backlinks from existing articles)
-    # 3. Notify search engines (Google Indexing API + IndexNow)
-    _run_seo_post_publish(post, config)
+    # Only fires when the post is actually PUBLIC (status="publish").
+    # Drafts skip this — no point indexing or internal-linking content that
+    # isn't yet live.
+    if post.get("status") == "publish":
+        _run_seo_post_publish(post, config)
 
+    return post
+
+
+def transition_draft_to_publish(post_id: int, config: Config) -> dict:
+    """
+    Promote an existing WordPress draft to status="publish".
+
+    This is the function the dashboard's "Approve & Publish" button calls
+    after a human reviewer has read the draft. After flipping the status,
+    we trigger the full SEO post-publish pipeline (embeddings, internal
+    linking, Google Indexing API + IndexNow ping).
+
+    Returns the updated WordPress post dict.
+    """
+    logger.info(f"Approving draft post {post_id} for publication…")
+    resp = requests.post(
+        f"{config.wp_url}/wp-json/wp/v2/posts/{post_id}",
+        json={"status": "publish"},
+        headers=_auth_header(config),
+        timeout=30,
+    )
+    resp.raise_for_status()
+    post = resp.json()
+    logger.info(f"Post {post_id} is now LIVE — {post.get('link')}")
+
+    # Now that it's public, run the SEO pipeline
+    _run_seo_post_publish(post, config)
     return post
 
 

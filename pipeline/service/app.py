@@ -232,6 +232,120 @@ async def generate_run(run_id: str, _: None = Auth) -> dict:
     return {"status": "started", "run_id": run_id}
 
 
+# ── Article review gate (human-in-the-loop publish approval) ──────────────────
+
+
+@app.post("/runs/{run_id}/approve-for-publish")
+async def approve_for_publish(run_id: str, _: None = Auth) -> dict:
+    """
+    Flip the WordPress draft to PUBLIC after a human has read & approved it.
+
+    Required state: topic_status must be `pending_review` and run must have
+    a `wp_post_id` (the draft created during generation).
+
+    Side effects after success:
+      • WP post status: draft → publish
+      • topic_status: pending_review → published
+      • Triggers SEO post-publish pipeline (embeddings, internal linking,
+        Google Indexing API + IndexNow ping) via wordpress_client.
+    """
+    run = run_tracker.load_run(run_id)
+    if not run:
+        raise HTTPException(404, f"Run {run_id} not found")
+
+    current = run.get("topic_status")
+    if current != "pending_review":
+        raise HTTPException(
+            400,
+            f"Article must be in pending_review (current: {current}). "
+            "Generate the article first."
+        )
+
+    post_id = run.get("wp_post_id")
+    if not post_id:
+        raise HTTPException(400, "No WordPress draft exists for this run.")
+
+    from ..config import load_config
+    from ..publisher.wordpress_client import transition_draft_to_publish
+    cfg = load_config()
+
+    try:
+        run_tracker.update_topic_status(run_id, "publishing")
+        run_tracker.log(run_id, "info", "publish",
+                        f"User approved draft #{post_id}. Promoting to live…")
+        post = await asyncio.to_thread(transition_draft_to_publish, post_id, cfg)
+        post_url = post.get("link", "")
+
+        run_tracker.update_run(
+            run_id,
+            wp_post_url=post_url,
+            approval_status="approved",
+            approved_by="dashboard",
+        )
+        run_tracker.complete_run(run_id, post_url)
+        run_tracker.update_topic_status(run_id, "published")
+        run_tracker.log(run_id, "info", "done",
+                        f"LIVE — {post_url}")
+
+        return {
+            "status":      "published",
+            "run_id":      run_id,
+            "wp_post_id":  post_id,
+            "wp_post_url": post_url,
+        }
+    except Exception as exc:
+        run_tracker.log(run_id, "error", "publish_approval", str(exc))
+        run_tracker.update_topic_status(run_id, "pending_review")
+        raise HTTPException(500, f"Approval failed: {exc}")
+
+
+@app.post("/runs/{run_id}/reject-article")
+async def reject_article(run_id: str, _: None = Auth) -> dict:
+    """
+    Reject an article that's pending_review. Marks the run as rejected and
+    leaves the WordPress draft in place (so the user can delete it from
+    wp-admin or recover the text). Does NOT auto-delete the draft to give
+    the user a chance to copy useful material.
+    """
+    run = run_tracker.load_run(run_id)
+    if not run:
+        raise HTTPException(404, f"Run {run_id} not found")
+
+    current = run.get("topic_status")
+    if current not in ("pending_review", "article_ready", "saving_draft"):
+        raise HTTPException(
+            400,
+            f"Can only reject pending/ready articles (current: {current})"
+        )
+
+    run_tracker.update_topic_status(run_id, "rejected")
+    run_tracker.update_run(run_id,
+                           approval_status="rejected",
+                           rejected_by="dashboard")
+    run_tracker.log(run_id, "info", "rejected",
+                    "Article rejected by reviewer. WP draft retained for manual cleanup.")
+
+    return {
+        "status":     "rejected",
+        "run_id":     run_id,
+        "wp_post_id": run.get("wp_post_id"),
+        "wp_admin_url": run.get("wp_admin_url"),
+    }
+
+
+@app.get("/runs/pending-review")
+async def list_pending_review(_: None = Auth) -> dict:
+    """List every run currently waiting for human approval to go live."""
+    runs = run_tracker.load_all_runs()
+    pending = [r for r in runs if r.get("topic_status") == "pending_review"]
+    # newest first
+    pending.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    return {
+        "count": len(pending),
+        "runs":  [_safe_run(r) for r in pending],
+    }
+
+
 # ── Article + image routes ─────────────────────────────────────────────────────
 
 

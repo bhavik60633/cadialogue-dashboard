@@ -2,8 +2,15 @@
 Per-topic article generator and publisher.
 Called by FastAPI POST /runs/{id}/generate after the user approves a topic.
 
-Flow (Phase 1 — no images):
-  approved → generating → article_ready → publishing → published
+Flow (with human review gate):
+  approved → generating → article_ready → pending_review →
+    (user clicks Approve)  → publishing → published
+    (user clicks Reject)   → rejected
+    (fact-validator FAIL)  → pending_review with `requires_attention=true`
+
+Articles are pushed to WordPress as DRAFTS during the article_ready step so
+the user can preview them at /wp-admin. They only become public ("publish")
+when the user explicitly approves via POST /runs/{id}/approve-for-publish.
 """
 import asyncio
 import traceback
@@ -100,6 +107,18 @@ async def run_topic(run_id: str) -> None:
             stage="article_ready",
         )
 
+        # ── Stage 3b: Fact-validation safety net ─────────────────────────────
+        #     Scans for [UNVERIFIED:...] markers and numbers not traceable to
+        #     verified facts / live market data. Result is attached to the run
+        #     so the reviewer sees flags in the dashboard.
+        from ..writer.fact_validator import validate_article
+        validation = validate_article(article, facts, market)
+        tracker.update_run(run_id, fact_validation=validation.to_dict())
+        tracker.log(
+            run_id, "info" if validation.is_clean else "warn",
+            "fact_validation", validation.summary
+        )
+
         # ── Auto-save to topic library ────────────────────────────────────────
         try:
             from ..library.topic_library import save_from_run
@@ -109,37 +128,45 @@ async def run_topic(run_id: str) -> None:
         except Exception as lib_exc:
             logger.warning(f"Library auto-save failed (non-fatal): {lib_exc}")
 
-        # ── Stage 4: Publish ──────────────────────────────────────────────────
-        tracker.update_topic_status(run_id, "publishing")
-        tracker.log(run_id, "info", "publish", "Publishing to WordPress…")
-        await _emit("stage", stage="publishing", message="Publishing to WordPress…")
+        # ── Stage 4: Save as WordPress DRAFT (not publish) ───────────────────
+        #     The article needs human review before going public. We push it
+        #     to WordPress as a DRAFT so the user can preview the rendered
+        #     post at /wp-admin/post.php?post=ID&action=edit before approving.
+        tracker.update_topic_status(run_id, "saving_draft")
+        tracker.log(run_id, "info", "draft", "Saving article as WordPress draft for review…")
+        await _emit("stage", stage="saving_draft", message="Saving draft for review…")
 
         from ..publisher.wordpress_client import publish_post
         category = topic_meta.get("category", "global_market")
-        wp_post = await publish_post(article, seo_meta, schemas, config, category=category)
-        post_url = wp_post["link"]
-        tracker.log(run_id, "info", "publish", f"Published: {post_url}")
-        tracker.update_run(run_id, wp_post_id=wp_post["id"], wp_post_url=post_url)
+        wp_post = await publish_post(
+            article, seo_meta, schemas, config,
+            category=category,
+            status="draft",                       # ← DRAFT, not publish
+        )
+        draft_url   = wp_post.get("link", "")
+        preview_url = f"{config.wp_url}/?p={wp_post['id']}&preview=true"
+        admin_url   = f"{config.wp_url}/wp-admin/post.php?post={wp_post['id']}&action=edit"
 
-        # ── Stage 5: Index ────────────────────────────────────────────────────
-        tracker.log(run_id, "info", "index", "Pinging search engines…")
-        try:
-            from ..publisher.indexer import ping_all
-            await ping_all(post_url, config)
-        except Exception as ie:
-            logger.warning(f"Indexing failed (non-fatal): {ie}")
-
-        # ── Completion ────────────────────────────────────────────────────────
-        tracker.complete_run(run_id, post_url)
-        tracker.update_topic_status(run_id, "published")
-        tracker.log(run_id, "info", "done", f"Published: {post_url}")
+        tracker.update_run(
+            run_id,
+            wp_post_id=wp_post["id"],
+            wp_post_url=draft_url,
+            wp_preview_url=preview_url,
+            wp_admin_url=admin_url,
+        )
+        tracker.update_topic_status(run_id, "pending_review")
+        tracker.log(run_id, "info", "pending_review",
+                    f"Draft saved (post #{wp_post['id']}). Awaiting human approval.")
         await _emit(
             "status",
-            topic_status="published",
-            wp_post_url=post_url,
+            topic_status="pending_review",
             wp_post_id=wp_post["id"],
-            stage="done",
+            wp_preview_url=preview_url,
+            wp_admin_url=admin_url,
+            fact_validation=validation.to_dict(),
+            stage="pending_review",
         )
+        # STOP HERE — DO NOT auto-publish. Wait for user via approve-for-publish endpoint.
 
     except Exception as exc:
         tb = traceback.format_exc()
